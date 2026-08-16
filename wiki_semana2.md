@@ -1,496 +1,266 @@
-# Reflexión — Semana 2
+# Entrega Semana 2 — Tool calling y arquitectura MCP
 
-**Proyecto:** Asistente de Evaluación de Convocatorias y Conformación de Equipos
-**Cliente:** Centro de Proyectos y Consultoría — Universidad de los Alpes
-**Repositorio:** [mesabusta/asistente-convocatorias](https://github.com/mesabusta/asistente-convocatorias)
-**Integrantes:** [mesabusta](https://github.com/mesabusta) · [ysusecheo93](https://github.com/ysusecheo93)
+**Caso:** Asistente de Evaluación de Convocatorias y Conformación de Equipos — Universidad de los Alpes
+**Principio de diseño de esta entrega:** entre más simple, mejor. La rúbrica pide *al menos tres* herramientas; implementamos exactamente tres, con el patrón de los tutoriales del curso.
 
 ---
 
 ## 1. Reflexión y diagrama actualizado
 
-### Diagrama actualizado (semana 2)
+### Diagrama coherente con la implementación
 
 ```mermaid
 flowchart TD
-    U([Usuario: personal, directivo o externo]) --> AG
+    INI(["Mensaje del usuario"]) --> AG[["agent: el LLM razona con las<br/>3 tools vinculadas (bind_tools)"]]
+    AG --> DEC{"¿La respuesta trae<br/>tool_calls?"}
+    DEC -- "Sí" --> TN["tools: ejecutar cada llamada<br/>vía el cliente MCP (stdio)"]
+    TN --> AG
+    DEC -- "No: respuesta final" --> FIN(["Fin del turno"])
 
-    subgraph CLIENTE["Proceso cliente — LangGraph (centro/graph.py)"]
-        AG["agent_node<br/>evalúa la intención"]
-        DEC{"should_continue<br/>¿faltan datos?"}
-        TN["tools_node<br/>ejecuta cada tool_call"]
-        AG --> DEC
-        DEC -- "no" --> FIN([Respuesta, acción o escalamiento])
-        DEC -- "sí" --> TN
-        TN -- "ToolMessage" --> AG
+    subgraph MCP["Servidor MCP (FastMCP, proceso aparte)"]
+        T1["consultar_convocatoria<br/>(pública)"]
+        T2["autenticar<br/>(frontera)"]
+        T3["crear_solicitud<br/>(acción, solo rol personal)"]
     end
+    TN -.->|"MCP wire protocol<br/>stdin/stdout"| MCP
 
-    TN <-. "JSON-RPC sobre stdio (MCP)" .-> SRV
-
-    subgraph SERVIDOR["Subproceso servidor — FastMCP (centro/mcp_server.py)"]
-        SRV["centro-convocatorias-server<br/>10 herramientas"]
-        PUB["Públicas<br/>buscar · leer · consultar_politica"]
-        AUT["autenticar<br/>cédula + clave → token con rol"]
-        INT["Internas — verifican rol<br/>perfil · personal · solicitudes"]
-        ACC["Acciones — verifican rol<br/>crear · asignar · escalar"]
-        SRV --> PUB & AUT & INT & ACC
-        PUB --> KB[("base_conocimiento/<br/>markdown público")]
-        AUT --> DI
-        INT --> DI[("datos_internos/<br/>privado")]
-        ACC --> DI
-    end
-
-    style DEC fill:#ffe0b2,stroke:#e65100,stroke-width:2px
-    style AUT fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style KB fill:#e8f5e9,stroke:#1b5e20
-    style DI fill:#fce4ec,stroke:#880e4f
+    classDef llm fill:#FFE9A8,stroke:#B8860B,stroke-width:2px;
+    classDef tec fill:#E8F0FE,stroke:#1A73E8;
+    classDef inifin fill:#E6F4EA,stroke:#188038;
+    class AG llm;
+    class TN,T1,T2,T3 tec;
+    class INI,FIN inifin;
 ```
 
-> ### ⬛ REEMPLAZAR 1 de 3 — Diagrama de la semana 1
-> Pega aquí la imagen del diagrama original o el enlace a la herramienta de
-> diagramación, para que se vea el contraste con el diagrama de arriba.
+El grafo es el ciclo ReAct del tutorial del curso: `agent ⇄ tools` con una arista condicional. El agente es **stateful**: `AgentState` acumula el historial completo con el reducer `add_messages`, así el token que devuelve `autenticar` en un turno está disponible cuando el modelo decide invocar `crear_solicitud` en el siguiente.
 
-### 1.1 Cambios respecto al diagrama de la semana 1
+### Hipótesis revisadas y cambios realizados
 
-**¿Qué hipótesis del diseño original resultó incorrecta o incompleta?**
+La primera versión de esta entrega tenía **diez herramientas** y tres módulos de soporte (~900 líneas). Al revisarla contra la rúbrica —que pide *al menos tres* tools— y contra el principio de agencia mínima del curso, la simplificamos a **tres herramientas en un solo módulo (~350 líneas)**:
 
-La hipótesis que falló fue **tratar la evaluación como una sola decisión**. El
-diseño original tenía un único punto de bifurcación —«¿el Centro puede aplicar o
-no?»— y asumía que se llegaba a él con toda la información en la mano. Al
-implementarlo aparecieron tres decisiones encadenadas, y el orden importa:
+- **Hipótesis original:** cada operación del caso (buscar, leer, consultar política, autenticar, ver perfil, listar personal, listar solicitudes, crear, asignar, escalar) merecía su propia tool desde ya.
+- **Qué aprendimos:** cada tool adicional agranda el esquema que el modelo recibe en cada invocación, aumenta la probabilidad de una llamada equivocada y amplía la superficie de ataque. Para demostrar tool calling y MCP bastan las tres capacidades esenciales del caso; el resto (asignación del directivo, escalamiento como tool) llega en las próximas semanas, cuando la entrega lo exija.
+- **Fusiones concretas:** `buscar_convocatorias` + `leer_convocatoria` → `consultar_convocatoria` (una sola pregunta: "¿qué dice esta convocatoria?"); `autenticar` + `consultar_perfil` → `autenticar` devuelve el perfil propio (el modelo ya no necesita una segunda llamada); las políticas ya no se leen como tool aparte — los topes (overhead, sectores restringidos) se validan **dentro** de `crear_solicitud`, que es donde importan.
 
-1. **¿Esto es público o interno?** Determina si hay que pedir credenciales.
-2. **¿Qué puede hacer este rol?** El personal y un directivo hacen preguntas
-   parecidas y necesitan respuestas distintas.
-3. **¿Es viable la convocatoria?** Y esta solo tiene sentido después de las
-   otras dos.
+### Evolución de la decisión agéntica
 
-Dos supuestos más resultaron incompletos:
+En la semana 1 la decisión agéntica era un rombo dibujado: un nodo router que clasificaba la intención. En la implementación real la decisión **no es un nodo con reglas**: emerge del propio LLM con las tools vinculadas. El modelo lee el mensaje y decide si invoca `consultar_convocatoria` de inmediato (consulta pública), si primero pide credenciales y llama `autenticar` (gestión personal), o si responde sin tools. La arista condicional `should_continue` solo observa si la respuesta trae `tool_calls` — no contiene lógica de negocio.
 
-- **Creímos que la autorización se podía manejar con instrucciones al modelo.**
-  Un system prompt que dice «el personal nunca asigna» es una sugerencia, no un
-  control. Lo movimos dentro de las herramientas.
-- **No contemplábamos un camino que no fuera sí o no.** El caso del sector
-  extractivo no se resuelve con ninguno de los dos: exige escalar. Eso obligó a
-  agregar una salida que el diagrama original no tenía.
-
-**¿Qué nodos o conexiones agregaron al incorporar tool calling y MCP?**
-
-| Elemento nuevo | Rol |
-|---|---|
-| `tools_node` | Nodo ejecutor: recorre `last.tool_calls`, despacha contra `tools_map` y devuelve un `ToolMessage` por llamada. |
-| Arista `tools_node → agent_node` | Cierra el ciclo ReAct: el resultado vuelve al LLM como contexto en lugar de terminar el grafo. |
-| Arista condicional `should_continue` | Bifurcación entre `tools` y `END` según exista o no `tool_calls` en el último mensaje. |
-| Frontera de proceso MCP | El servidor no es una función importada: es un **subproceso separado** que habla JSON-RPC sobre stdio. |
-| Handshake `list_tools()` | El cliente descubre las diez herramientas en tiempo de ejecución en vez de tenerlas cableadas. |
-| **Frontera de autenticación** | `autenticar` convierte credenciales en un token con rol. Las herramientas internas lo exigen y lo verifican **ellas mismas**. |
-| **Salida de escalamiento** | `escalar_a_humanos` es un tercer desenlace, distinto de responder y de ejecutar una acción. |
-
-**¿El punto de decisión agéntica sigue siendo el mismo?**
-
-**Cambió de lugar, de naturaleza y de número.** En la semana 1 la decisión era
-*«¿qué respondo?»*: un único punto terminal. Ahora el punto de decisión es
-`should_continue`, y es **recurrente**: se evalúa después de cada turno del LLM,
-así que el agente encadena tantas herramientas como necesite antes de concluir.
-
-El cambio de fondo es que la decisión pasó de *generativa* a *de control de
-flujo*: el agente ya no decide el contenido de la respuesta, decide **si tiene
-evidencia suficiente para actuar**. La Situación A lo muestra — tras leer la
-convocatoria y la política, `should_continue` cierra el grafo sin crear nada,
-porque lo que encontró fue una brecha.
-
-Y apareció una decisión que el diseño original no tenía: **cuándo no decidir**.
-La Situación C termina invocando una herramienta cuyo propósito es documentar
-que el caso supera al sistema.
+Lo determinista se movió a donde debe vivir: **dentro de las herramientas**. El control de rol, las brechas de política y el rechazo de duplicados se validan en `crear_solicitud`, no en el prompt. El modelo propone; el harness controla.
 
 ---
 
 ## 2. Diseño de herramientas
 
-### 2.1 Tabla de tools diseñadas
+### Tabla de tools
 
-| Nombre | Descripción | Parámetros | Tipo de retorno |
-|---|---|---|---|
-| `buscar_convocatorias` | Lista las convocatorias abiertas filtrando por área, tipo o texto libre. Pública. | `area: str?`, `tipo: str?`, `texto: str?` | JSON `{ok, fuente, n_resultados, convocatorias[]}` o `{ok:false, error, areas_disponibles}` |
-| `leer_convocatoria` | Lee las bases completas y extrae montos, topes, plazos y señales de riesgo. Pública. | `convocatoria_id: str` | JSON `{ok, id, entidad, tipo_entidad, overhead_maximo_pct, overhead_minimo_institucional_pct, señales_de_riesgo[], texto}` |
-| `consultar_politica` | Devuelve la política de participación relevante para un tema. Pública. | `tema: str` | JSON `{ok, id, titulo, texto}` |
-| `autenticar` | Valida cédula y clave de 4 dígitos y abre sesión. | `cedula: str`, `clave: str` | JSON `{ok, token, nombre, rol, capacidades[]}` |
-| `consultar_perfil` | Perfil del usuario autenticado: experticia, nivel, dedicación, historial. Solo el propio. | `token: str` | JSON `{ok, fuente:"interna", perfil}` |
-| `listar_personal` | Todo el personal del Centro, opcionalmente filtrado por área. **Solo directivo.** | `token: str`, `area: str?` | JSON `{ok, n_personas, personal[]}` o `{ok:false, brecha:"experticia"}` |
-| `listar_solicitudes` | Solicitudes creadas por el personal. **Solo directivo.** | `token: str`, `convocatoria_id: str?` | JSON `{ok, n_solicitudes, solicitudes[]}` |
-| `crear_solicitud` | Registra una postulación a nombre del usuario. **Solo personal.** | `token: str`, `convocatoria_id: str`, `rol_propuesto: str`, `justificacion: str` | JSON `{ok, accion:"solicitud_creada", solicitud}` o `{ok:false, brecha}` |
-| `asignar_convocatoria` | Asigna la convocatoria a un equipo concreto. **Solo directivo.** | `token: str`, `convocatoria_id: str`, `cedulas: list[str]`, `justificacion: str` | JSON `{ok, accion:"convocatoria_asignada", asignacion}` |
-| `escalar_a_humanos` | Entrega el caso al equipo humano con un resumen estructurado. | `motivo: str`, `convocatoria_id: str?`, `analisis_realizado: list?`, `brechas: list?`, `preguntas_pendientes: list?` | JSON `{ok, accion:"escalado", destinatario, brechas[], preguntas_pendientes[]}` |
+| # | Tool | Descripción | Parámetros | Retorno |
+|---|------|-------------|------------|---------|
+| 1 | `consultar_convocatoria` | Encuentra una convocatoria abierta (por id o texto libre) y devuelve sus bases completas, sus condiciones y las señales de riesgo detectables. Información pública, sin autenticación. | `consulta: str` | `str` (JSON): bases + `overhead_maximo_pct`, `overhead_minimo_institucional_pct`, `señales_de_riesgo`, `texto`; o `ok=false` con `ids_disponibles` |
+| 2 | `autenticar` | Valida cédula y clave, abre una sesión con rol y devuelve el perfil propio (nunca el de otro, nunca la clave). | `cedula: str`, `clave: str` | `str` (JSON): `token`, `rol`, `perfil`; o `ok=false` con error genérico |
+| 3 | `crear_solicitud` | Registra la postulación del usuario autenticado tras validar rol y brechas (riesgo reputacional, overhead, duplicado). Exclusiva del rol `personal`. | `token: str`, `convocatoria_id: str`, `rol_propuesto: str`, `justificacion: str` | `str` (JSON): `accion: "solicitud_creada"` + solicitud; o `ok=false` con `brecha` específica |
 
-Las diez se definen una sola vez en `centro/tools.py`; `centro/mcp_server.py`
-las envuelve con `@mcp.tool()` sin duplicar lógica. Los parámetros usan
-`Annotated[tipo, Field(description=...)]`, que es lo que FastMCP convierte en el
-JSON-Schema que ve el modelo: **la descripción del parámetro es el prompt que
-guía la elección de argumentos**.
+### Justificación de su necesidad
 
-Todas comparten el contrato de error `{"ok": false, "error": "..."}`. Un
-`ok=false` no es una excepción: es información con la que el agente puede
-reintentar por otro camino o reportar una brecha concreta.
+Cada tool corresponde a una capacidad que el caso exige y que el modelo no puede cumplir solo: no puede *saber* qué dice una convocatoria (tool 1: la lee de la base de conocimiento), no puede *verificar* una identidad (tool 2: valida credenciales contra el registro), y no puede *registrar* una postulación (tool 3: escribe en el sistema interno). Son además los tres tipos de tool del caso: lectura pública, frontera de autenticación y acción con efectos.
 
-### 2.2 Justificación
+### Decisiones de diseño
 
-- **`buscar_convocatorias`** — El usuario no conoce los códigos internos; pide
-  «la del BID de educación». Sin esta herramienta habría que exigirle el
-  identificador exacto.
-- **`leer_convocatoria`** — Es la fuente de todo requisito. Además calcula el
-  mínimo institucional aplicable según el tipo de entidad, que es el dato que
-  convierte un tope en una brecha.
-- **`consultar_politica`** — Las restricciones que dejan a la universidad por
-  fuera están en las políticas, no en las bases. Detectarlas tarde es
-  exactamente el error caro que describe el caso.
-- **`autenticar`** — Es la frontera entre lo público y lo interno. Devuelve el
-  rol junto con el token para que la capacidad viaje con la identidad.
-- **`consultar_perfil`** — Permite contrastar los requisitos contra la persona
-  real. No recibe cédula como parámetro: así no existe la posibilidad de
-  consultar el perfil ajeno.
-- **`listar_personal`** — El directivo necesita ver el conjunto para conformar
-  un equipo; el personal no. La herramienta encarna esa asimetría.
-- **`listar_solicitudes`** — Es el insumo de la decisión de asignación: quién se
-  postuló, en qué rol y con qué argumento.
-- **`crear_solicitud`** — Materializa que el personal *propone*. Verifica
-  brechas antes de registrar, de modo que no queden solicitudes sobre
-  convocatorias inviables.
-- **`asignar_convocatoria`** — La única forma de comprometer personal. Exige
-  justificación: una asignación sin razones contra los criterios de evaluación
-  se rechaza.
-- **`escalar_a_humanos`** — Convierte «no sé» en un entregable. Sin ella el
-  agente solo podría rendirse en prosa y el Comité tendría que rehacer el
-  análisis.
-
-### 2.3 Decisiones de diseño
-
-**¿Cómo decidieron qué encapsular en una tool versus dejar como lógica interna?**
-
-Aplicamos cuatro criterios:
-
-1. **Todo lo que cruza la frontera de confianza es una tool.** Leer un
-   documento público, autenticar, tocar datos internos. La frontera es
-   justamente lo que hay que poder auditar.
-2. **Toda acción con efecto es una tool.** Crear una solicitud o asignar un
-   equipo cambia el estado del mundo. El agente nunca puede *afirmar* que ocurrió
-   sin la confirmación de la herramienta que lo ejecutó.
-3. **La autorización va en la tool, nunca en el prompt.** Este fue el criterio
-   más consecuente. `centro/internos.exigir_rol` es el punto único donde se
-   decide si una operación interna procede. Un system prompt que dice «el
-   personal nunca asigna» es una sugerencia que se puede desobedecer; una
-   función que devuelve `ok=false` no. Hay un test — con el agente completo
-   pasando por MCP — que hace que el modelo intente autoasignarse y verifica que
-   la herramienta lo rechaza.
-4. **La interpretación se queda en el agente.** Decidir qué consultar, en qué
-   orden, y traducir el JSON a lenguaje natural es trabajo del LLM. Ninguna tool
-   devuelve prosa: devuelven JSON y el agente redacta.
-
-Quedaron como lógica interna, no expuesta: la carga y el parseo de los
-documentos (`kb.py`), el manejo de sesiones y el filtrado de campos sensibles
-(`internos.py`). La clave nunca sale de `internos`: `perfil_publico()` la
-descarta antes de que cualquier herramienta pueda verla.
-
-La regla práctica quedó así: **la tool aporta hechos y hace cumplir permisos; el
-agente aporta criterio.**
-
-**¿Descartaron alguna tool durante el diseño?**
-
-Sí, tres:
-
-- **`evaluar_viabilidad(convocatoria_id)`** — Una única herramienta que
-  devolviera «aplica / no aplica». La descartamos porque movía el juicio al
-  servidor: el agente habría dejado de razonar y se habría vuelto un pasamanos.
-  El caso pide razonamiento en etapas, y eso exige que las piezas lleguen
-  separadas.
-- **`recomendar_equipo(convocatoria_id)`** — Habría producido el equipo
-  óptimo por cuenta propia. Es exactamente la decisión que el caso reserva a los
-  directivos. Dejamos que el agente proponga con `listar_personal` y
-  `listar_solicitudes`, pero que comprometer personal siga exigiendo
-  `asignar_convocatoria` con justificación.
-- **`consultar_personal(cedula)`** — Ver el perfil de otra persona. La
-  eliminamos por diseño: `consultar_perfil` no recibe cédula, así que la
-  capacidad de espiar el perfil ajeno no existe en la superficie de la API.
-  Un directivo que necesite ver a otros usa `listar_personal`, que sí verifica
-  el rol.
+1. **Granularidad fina, como en el tutorial.** Cada tool hace exactamente una cosa y todos sus parámetros son siempre relevantes — no hay campos condicionales que el modelo deba "decidir ignorar" (el antipatrón `convert_or_calculate` del tutorial de MCP).
+2. **Errores como información, no como excepciones.** Todas devuelven JSON con el contrato `{"ok": true|false}`. Un `ok=false` trae la brecha concreta (`overhead`, `riesgo_reputacional`, `duplicada`) y datos útiles (los porcentajes en conflicto, los ids disponibles), para que el agente explique el problema en lugar de rechazar genéricamente.
+3. **La autorización vive en la tool, no en el prompt.** `crear_solicitud` valida token y rol del lado del servidor: si el modelo fuera persuadido de crear una solicitud con una sesión de directivo o un token inventado, la herramienta la rechaza igual. El prompt orienta; la infraestructura restringe.
+4. **Tres y no diez.** Cada tool extra es esquema adicional en cada invocación del modelo y superficie de ataque adicional (principio de agencia mínima). Las capacidades del directivo llegarán cuando una entrega las exija.
 
 ---
 
 ## 3. Evidencia del agente con tool calling
 
-Reproducible con `python -m centro.evidencia_flujo`. El LLM se sustituye por
-`ScriptedLLM` para que la evidencia sea determinista y ejecutable en CI sin
-Ollama; **el servidor MCP, la ejecución de las herramientas, la autenticación y
-el control de rol son reales**.
+El agente es stateful (`AgentState` con `add_messages`) y los flujos corren de extremo a extremo contra el servidor MCP real por stdio. Para que la evidencia sea **reproducible sin GPU ni Ollama**, la decisión del modelo está guionizada (`ScriptedLLM`); todo lo demás —el servidor, el descubrimiento de tools, la autenticación, las validaciones y el estado— es real. Reproducir: `python -m centro.evidencia_flujo`.
 
-### Situación A — brecha de política: el agente no crea la solicitud
+### Flujo 1 — consulta pública: se responde sin pedir identidad
 
 ```text
-[HANDSHAKE MCP] 10 herramientas descubiertas:
-  buscar_convocatorias, leer_convocatoria, consultar_politica, autenticar,
-  consultar_perfil, listar_personal, listar_solicitudes, crear_solicitud,
-  asignar_convocatoria, escalar_a_humanos
+[HANDSHAKE MCP] 3 herramientas descubiertas:
+  consultar_convocatoria, autenticar, crear_solicitud
 
 [ENTRADA DEL USUARIO]
-¿Puedo postularme a la convocatoria del BID de innovación en educación superior?
+¿Qué pide la convocatoria del BID de innovación en educación superior?
 
 [DECISIÓN DEL AGENTE] -> invocar herramienta
-  herramienta: leer_convocatoria
-  argumentos : {"convocatoria_id": "BID-2026-EDU-014"}
+  herramienta: consultar_convocatoria
+  argumentos : {"consulta": "BID-2026-EDU-014"}
 
 [RESULTADO DEL SERVIDOR MCP]
   {
     "ok": true,
     "fuente": "publica",
+    "id": "BID-2026-EDU-014",
+    "titulo": "Innovación pedagógica y permanencia en educación superior",
     "entidad": "Banco Interamericano de Desarrollo (BID)",
-    "tipo_entidad": "organismo_internacional",
+    "tipo": "investigacion",
+    "area": "educacion_superior",
+    "cierre": "2026-09-30",
+    "monto_cop": 1850000000,
     "overhead_maximo_pct": 12,
     "overhead_minimo_institucional_pct": 15,
     "señales_de_riesgo": [],
     "texto": "<1899 caracteres de texto markdown>"
   }
 
+[RESPUESTA FINAL DEL AGENTE]
+Las bases de la BID-2026-EDU-014 (fuente pública, sin necesidad de identificarte)
+piden tener en cuenta dos condiciones antes de postularse:
+
+1. CONSORCIO. Exige un consorcio con al menos una universidad de otro país miembro
+   del BID; las propuestas de una sola institución no quedan habilitadas.
+2. OVERHEAD. La convocatoria reconoce un máximo del 12% de costos indirectos y el
+   mínimo institucional para organismos internacionales es 15% (POL-FIN-001): hay
+   una brecha de 3 puntos que solo levanta una exención de la Vicerrectoría.
+
+Cierra el 30 de septiembre de 2026. [...]
+```
+
+**Lectura:** el mensaje no toca datos de ningún miembro del Centro, así que el agente resolvió con la tool pública y **no invocó `autenticar`** — la distinción público/interno surgió del análisis de la intención, no de una regla por palabra clave.
+
+### Flujo 2 — postulación: autenticar, contrastar el perfil y crear la solicitud
+
+```text
+[ENTRADA DEL USUARIO]
+¿Puedo aplicar a la convocatoria de Minciencias de ciencias económicas y administrativas?
+
 [DECISIÓN DEL AGENTE] -> invocar herramienta
-  herramienta: consultar_politica
-  argumentos : {"tema": "overhead"}
+  herramienta: autenticar
+  argumentos : {"cedula": "1080901234", "clave": "3846"}
+
+[RESULTADO DEL SERVIDOR MCP]
+  { "ok": true, "fuente": "interna", "token": "ses_685e27983318549d",
+    "rol": "personal",
+    "perfil": { "nombre": "Ricardo Tovar", "publicaciones_ultimos_5_anios": 7,
+                "dedicacion": "tiempo_completo", ... } }
+
+[DECISIÓN DEL AGENTE] -> invocar herramienta
+  herramienta: consultar_convocatoria
+  argumentos : {"consulta": "MINCIENCIAS-2026-CEA-003"}
+
+[RESULTADO DEL SERVIDOR MCP]
+  { "ok": true, "fuente": "publica", "id": "MINCIENCIAS-2026-CEA-003",
+    "cierre": "2026-11-14", "overhead_maximo_pct": 15,
+    "overhead_minimo_institucional_pct": 12, ... }
+
+[DECISIÓN DEL AGENTE] -> invocar herramienta
+  herramienta: crear_solicitud
+  argumentos : {"token": "ses_685e2798…", "convocatoria_id": "MINCIENCIAS-2026-CEA-003",
+                "rol_propuesto": "investigador principal", "justificacion": "Acredita 7
+                publicaciones en los últimos 5 años (la convocatoria exige 3) y dedicación
+                de tiempo completo, requisito del investigador principal. [...]"}
+
+[RESULTADO DEL SERVIDOR MCP]
+  { "ok": true, "fuente": "interna", "accion": "solicitud_creada",
+    "solicitud": { "id": "SOL-0005", "nombre": "Ricardo Tovar", "estado": "pendiente", ... },
+    "nota": "La solicitud queda en estado pendiente. La asignación final del equipo
+             es una decisión de la Dirección del Centro." }
+
+[RESPUESTA FINAL DEL AGENTE]
+Listo, Ricardo: tu solicitud quedó creada con el identificador SOL-0005 (confirmado
+por la herramienta). [...] tú te postulas, la asignación final la decide la Dirección.
+```
+
+**Lectura:** tres invocaciones encadenadas donde cada una depende de la anterior — el token viaja del resultado de `autenticar` a los argumentos de `crear_solicitud`, y la confirmación de creación proviene de la herramienta, nunca del modelo.
+
+### Flujo 3 — manejo explícito de un error: la brecha bloquea la acción
+
+```text
+[ENTRADA DEL USUARIO]
+Créame la solicitud para la convocatoria del BID de educación superior.
+
+[DECISIÓN DEL AGENTE] -> invocar herramienta
+  herramienta: autenticar
+  argumentos : {"cedula": "1030456789", "clave": "2964"}
+
+[DECISIÓN DEL AGENTE] -> invocar herramienta
+  herramienta: crear_solicitud
+  argumentos : {"token": "ses_ff586968…", "convocatoria_id": "BID-2026-EDU-014", ...}
 
 [RESULTADO DEL SERVIDOR MCP]
   {
-    "ok": true,
-    "fuente": "publica",
-    "id": "POL-FIN-001",
-    "titulo": "Política de overhead y contrapartida institucional"
+    "ok": false,
+    "error": "No puede crearse una solicitud: la convocatoria reconoce un overhead
+              máximo del 12% y el mínimo institucional para ese tipo de entidad es
+              15% (POL-FIN-001). Requiere exención de la Vicerrectoría, que tramita
+              la Dirección.",
+    "brecha": "overhead",
+    "overhead_convocatoria_pct": 12,
+    "overhead_minimo_institucional_pct": 15
   }
 
 [RESPUESTA FINAL DEL AGENTE]
-No deberías postularte a la BID-2026-EDU-014 en las condiciones actuales.
-Encontré dos brechas, ambas leídas de fuentes públicas:
-
-1. CONSORCIO. Las bases exigen un consorcio con al menos una universidad de
-otro país miembro del BID. Las propuestas de una sola institución no son
-habilitadas, y el Centro no tiene ese socio constituido.
-
-2. OVERHEAD. La convocatoria reconoce un máximo del 12% de costos indirectos.
-La política POL-FIN-001 fija un mínimo institucional del 15% para organismos
-internacionales. La brecha es de 3 puntos y solo la puede levantar una exención
-de la Vicerrectoría de Investigación.
-
-Por eso no creé ninguna solicitud: mientras la brecha exista, postularse sería
-invertir tiempo en una propuesta inhabilitada.
+No pude crear la solicitud, Carolina, y la razón es concreta: la herramienta devolvió
+ok=false con brecha de OVERHEAD. [...] No quedó registrada ninguna solicitud.
 ```
 
-Nótese que **no se invocó `autenticar`**: la pregunta se resolvió con las dos
-fuentes públicas. Y que el `overhead_minimo_institucional_pct: 15` frente al
-`overhead_maximo_pct: 12` es lo que convierte un dato en una brecha.
+**Manejo de errores en tres capas**, todas verificadas por tests:
 
-### Situación C — riesgo reputacional: el agente escala en vez de decidir
-
-```text
-[DECISIÓN DEL AGENTE] -> leer_convocatoria {"convocatoria_id": "PETROANDINA-2026-RSE-002"}
-
-[RESULTADO DEL SERVIDOR MCP]
-  {
-    "ok": true,
-    "sector_entidad": "extractivo",
-    "monto_cop": null,
-    "monto_declarado": "a convenir",
-    "señales_de_riesgo": [
-      "La entidad pertenece a un sector con restricción reputacional: extractivo.",
-      "El presupuesto se declara 'a convenir': no hay valor de referencia público."
-    ]
-  }
-
-[DECISIÓN DEL AGENTE] -> consultar_politica {"tema": "riesgo reputacional"}
-  → POL-RIE-002 · Política de riesgo reputacional y sectores con restricción
-
-[DECISIÓN DEL AGENTE] -> escalar_a_humanos
-  motivo    : "Riesgo reputacional: la entidad pertenece al sector extractivo y el
-               estudio implica datos sensibles de comunidades."
-  brechas   : ["Sector extractivo: restricción del numeral 1 de POL-RIE-002.",
-               "Datos sensibles de comunidades: señal 3 de la misma política.",
-               "Sin monto de referencia: no se puede determinar el nivel de autorización."]
-  preguntas : ["¿El Comité emite concepto favorable pese a los procesos ambientales?",
-               "¿Existe marco de tratamiento de datos comunitarios aprobado?",
-               "¿Qué valor estimado se usa con presupuesto a convenir?"]
-
-[RESULTADO DEL SERVIDOR MCP]
-  {
-    "ok": true,
-    "accion": "escalado",
-    "destinatario": "Comité de Ética y Reputación",
-    "nota": "No se creó solicitud ni se asignó equipo. La decisión queda en manos humanas."
-  }
-```
-
-> ### ⬛ REEMPLAZAR 2 de 3 — Screenshot del flujo extremo a extremo
-> Captura de la terminal ejecutando `python -m centro.evidencia_flujo`.
-> Debe verse el handshake MCP con las diez herramientas, las decisiones del
-> agente y el JSON de cada resultado. Las cuatro situaciones están en la salida.
-
-### ¿Qué señal del input llevó al agente a invocar esa tool y no continuar sin ella?
-
-En la Situación A la señal es **la mención de una convocatoria concreta unida a
-una pregunta de elegibilidad**. «¿Puedo postularme a la del BID de innovación en
-educación superior?» no se puede responder sin saber qué exige esa convocatoria,
-y ese texto solo existe en la base de conocimiento. La correspondencia entre lo
-que pide el usuario y lo que declara el JSON-Schema de `leer_convocatoria` es lo
-que dispara la llamada.
-
-El contraste lo aclara: *«¿qué es el overhead en un proyecto de investigación?»*
-tiene vocabulario del mismo dominio pero **no interroga a ninguna convocatoria ni
-política concreta**, así que el agente responde directamente. La señal no es el
-tema: es la necesidad de un dato que solo existe en una fuente.
-
-Hay además dos señales de segundo orden, y son las que hacen que el ciclo sea
-agéntico y no una secuencia fija:
-
-- **El resultado de una herramienta dispara la siguiente.** Ver
-  `overhead_maximo_pct: 12` no significa nada por sí solo; es lo que motiva
-  consultar la política para saber cuál es el mínimo institucional.
-- **Un `ok=false` reencamina el flujo.** Cuando `crear_solicitud` rechaza por
-  brecha de overhead, el agente no reintenta con otros argumentos: reporta la
-  brecha. Y cuando `leer_convocatoria` devuelve `señales_de_riesgo`, el agente
-  abandona la vía de la postulación y toma la del escalamiento.
+1. **Resultado inesperado de negocio:** la tool devuelve `ok=false` con la brecha específica y el agente la comunica sin crear nada (este flujo, y las brechas `riesgo_reputacional` y `duplicada` en los tests).
+2. **Fallo de ejecución:** `tools_node` captura excepciones y llamadas a herramientas inexistentes, y las convierte en un `ToolMessage` de error legible para que el modelo reaccione (test `test_herramienta_desconocida_devuelve_error_controlado`).
+3. **Ciclo sin progreso:** `should_continue` corta el grafo al superar `MAX_ITERACIONES`, el circuit breaker del harness.
 
 ---
 
 ## 4. Arquitectura MCP
 
-### Implementación concreta
+### Implementación
 
 ```mermaid
-sequenceDiagram
-    participant U as Usuario
-    participant C as Cliente LangGraph<br/>MultiServerMCPClient
-    participant S as Subproceso<br/>centro-convocatorias-server
-    participant KB as base_conocimiento/<br/>(público)
-    participant DI as datos_internos/<br/>(privado)
-
-    C->>S: spawn: python -m centro.mcp_server (stdio)
-    C->>S: initialize (handshake MCP)
-    S-->>C: capabilities: tools
-    C->>S: list_tools()
-    S-->>C: 10 herramientas + JSON-Schema
-    Note over C: load_mcp_tools() → BaseTool<br/>llm.bind_tools(tools)
-
-    U->>C: pregunta en lenguaje natural
-    C->>S: leer_convocatoria / consultar_politica
-    S->>KB: lee markdown
-    KB-->>S: bases y políticas
-    S-->>C: JSON {ok, ...}
-
-    alt La gestión toca datos internos
-        C->>S: autenticar(cédula, clave)
-        S->>DI: valida credenciales
-        DI-->>S: rol
-        S-->>C: {token, rol, capacidades}
-        C->>S: crear_solicitud / asignar_convocatoria (token)
-        Note over S: exigir_rol() — el servidor verifica,<br/>no el prompt
-        S-->>C: {ok:true, accion} o {ok:false, error de rol}
+flowchart LR
+    subgraph CLIENTE["Proceso del agente (cliente MCP)"]
+        G["Grafo LangGraph<br/>agent ⇄ tools"] --> C["MultiServerMCPClient<br/>+ load_mcp_tools()"]
     end
+    subgraph SERVIDOR["Subproceso: python -m centro.mcp_server"]
+        S["FastMCP<br/>centro-convocatorias-server"] --> H["3 tools registradas<br/>@mcp.tool()"]
+        H --> D1[("base_conocimiento/<br/>markdown + frontmatter")]
+        H --> D2[("datos_internos/<br/>personal y solicitudes")]
+    end
+    C <-->|"stdio (JSON-RPC del<br/>protocolo MCP)"| S
 
-    C->>U: respuesta, acción confirmada o escalamiento
-    C->>S: shutdown + terminación del subproceso
+    classDef tec fill:#E8F0FE,stroke:#1A73E8;
+    class G,C,S,H,D1,D2 tec;
 ```
 
-| Componente | Archivo | Detalle |
-|---|---|---|
-| Servidor | `centro/mcp_server.py` | `FastMCP(name="centro-convocatorias-server")`, transporte **stdio** |
-| Herramientas | `centro/tools.py` | 3 públicas, 1 de autenticación, 3 de lectura interna, 3 de acción |
-| Fuente pública | `base_conocimiento/` | 6 convocatorias y 4 políticas en markdown con frontmatter |
-| Fuente privada | `datos_internos/` | Personal, credenciales y solicitudes |
-| Cliente | `centro/graph.py` | `MultiServerMCPClient` + `load_mcp_tools()` dentro de `async with client.session("centro")` |
-| Descubrimiento | — | Dinámico vía `list_tools()`: agregar una herramienta no requiere tocar el cliente |
-| Control de acceso | `centro/internos.py` | `exigir_rol()` — punto único de decisión, del lado del servidor |
+- **Servidor** (`centro/mcp_server.py`): FastMCP en modo stdio, expone las tres herramientas delegando en `centro/tools.py` — la lógica no se duplica, así los tests ejercitan lo mismo que sirve el servidor.
+- **Cliente** (`centro/graph.py`): `MultiServerMCPClient` lanza el servidor como subproceso, `load_mcp_tools()` **descubre las herramientas dinámicamente** (no hay ninguna tool declarada en el cliente) y `bind_tools()` se las entrega al modelo. La sesión permanece abierta durante todo el grafo para que las invocaciones compartan la misma conexión.
 
-**Verificación automatizada:** `test_mcp_expone_las_diez_herramientas` abre una
-sesión MCP real y verifica el handshake, y
-`test_flujo_personal_que_intenta_asignar_es_rechazado_por_la_tool` recorre el
-agente completo intentando una autoasignación y comprueba que el servidor la
-rechaza. Ambos corren en cada pipeline.
+### Evidencia de ejecución
+
+El handshake real de cada flujo (sección 3) muestra el descubrimiento dinámico:
+
+```text
+[HANDSHAKE MCP] 3 herramientas descubiertas:
+  consultar_convocatoria, autenticar, crear_solicitud
+```
+
+Y la suite completa (17 tests, incluidos los flujos extremo a extremo por stdio) pasa:
+
+```text
+$ pytest -m semana2 -q
+.................                                                        [100%]
+17 passed
+```
 
 ### ¿Qué cambia si el servidor MCP lo opera un equipo externo?
 
-Lo que **no** cambia es el código del agente: esa es la promesa del protocolo.
-`graph.py` seguiría llamando `load_mcp_tools(session)` sin enterarse. Lo que
-cambia está en cinco frentes, y en este caso uno es más grave que en otros:
-
-1. **Transporte y confianza.** stdio deja de servir: se pasa a HTTP/SSE, y con
-   eso aparecen autenticación de servicio, TLS, latencia y rate limiting. La
-   configuración deja de ser `command`/`args` y pasa a ser una URL con
-   credenciales que hay que gestionar como secretos.
-2. **La autenticación de usuario se vuelve un problema de identidad
-   federada.** Hoy la cédula y la clave viajan por un pipe a un subproceso de
-   la propia máquina. Contra un servidor externo estaríamos enviando
-   credenciales del personal fuera del perímetro de la universidad. Habría que
-   sustituirlo por un esquema donde el Centro autentique localmente y el
-   servidor externo solo reciba un token firmado, sin ver la clave.
-3. **El contrato se vuelve un acuerdo entre equipos.** Hoy, si cambia el nombre
-   de un parámetro, cambian las dos puntas en el mismo commit. Con un proveedor
-   externo un cambio de schema es un *breaking change* que hay que versionar y
-   anunciar, y se necesitan contract tests contra staging.
-4. **La superficie de fallo se multiplica.** Un subproceso local falla de forma
-   binaria. Un servidor remoto puede estar caído, lento, devolver datos
-   obsoletos o cortar a mitad de respuesta. `tools_node` ya captura excepciones,
-   pero habría que añadir timeouts, reintentos con backoff y un circuit breaker.
-5. **Gobernanza del dato.** Los datos del personal —experticia, historial,
-   resultados de proyectos— son información laboral. Que salgan del perímetro
-   institucional deja de ser una decisión técnica y pasa a requerir concepto
-   jurídico y acuerdo de tratamiento de datos.
-
-En resumen, el servidor externo pasa de ser una **dependencia de código** a ser
-una **dependencia de servicio** — y, en un caso con datos de personas y
-credenciales, también una **dependencia de cumplimiento**.
+- **El código del cliente casi no cambia:** como las tools se descubren con `load_mcp_tools()`, bastaría reemplazar la configuración stdio por la URL del servidor remoto (transporte HTTP/SSE). Ninguna tool está cableada en el cliente.
+- **Cambia la confianza.** Hoy servidor y cliente son del mismo equipo; con un tercero, los esquemas y descripciones de las tools se vuelven contenido no confiable que entra al contexto del modelo (riesgo de prompt injection vía descripciones), y habría que validar/fijar versiones del contrato.
+- **Cambia la seguridad del canal:** stdio no necesita autenticación de red porque el subproceso es local; un servidor remoto exige TLS, autenticación del cliente (API key/OAuth) y autorización por herramienta.
+- **Cambian los modos de falla:** aparecen latencia, indisponibilidad y rate limiting. El contrato `ok=false` ya prepara al agente para tratar fallos como información, y el tope de iteraciones evita reintentos infinitos, pero un despliegue real sumaría timeouts y reintentos con backoff en el cliente.
+- **Cambia la evolución del contrato:** el tercero puede agregar, quitar o renombrar tools sin avisar. El descubrimiento dinámico lo tolera técnicamente; operacionalmente exigiría *pinning* de versión y monitoreo del manifiesto.
 
 ---
 
-## 5. GitHub Actions
+## 5. Verificación del repositorio
 
-Pipeline en `.github/workflows/entrega.yml`: se dispara en cada `push` a `main`
-y en cada `pull_request`, instala `requirements.txt` sobre Python 3.13 y ejecuta
-`pytest -m semana2 -q`.
+- `.github/workflows/entrega.yml` contiene únicamente el pipeline de la semana 2, que instala dependencias y ejecuta `pytest -m semana2`.
+- Verificación local previa al push: `pytest -m semana2 -q` → **17 passed**.
 
-**Flujo de trabajo del repositorio.** Historial limpio: un commit base con la
-estructura del proyecto y el trabajo de la semana aislado en la rama
-`semana2-tool-calling-mcp`, que se integra por pull request. El pipeline actúa
-como *quality gate*: los 35 tests corren antes del merge, no después.
+![Pipeline de la semana 2 en verde](ruta-a-la-captura.png)
 
-Resultado local de la misma suite que corre el pipeline:
-
-```text
-============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
-rootdir: /asistente-convocatorias
-configfile: pytest.ini
-testpaths: tests
-plugins: langsmith-0.3.45, asyncio-0.25.3, anyio-4.14.2
-asyncio: mode=Mode.AUTO
-collected 35 items
-
-tests/test_semana2.py::test_buscar_convocatorias_sin_autenticar PASSED   [  2%]
-tests/test_semana2.py::test_leer_convocatoria_expone_tope_y_minimo_institucional PASSED
-tests/test_semana2.py::test_leer_convocatoria_marca_senales_de_riesgo PASSED
-tests/test_semana2.py::test_consultar_politica_encuentra_la_correcta[overhead-POL-FIN-001] PASSED
-tests/test_semana2.py::test_personal_no_puede_listar_personal PASSED     [ 40%]
-tests/test_semana2.py::test_personal_no_puede_asignar PASSED             [ 45%]
-tests/test_semana2.py::test_perfil_solo_devuelve_el_propio_y_nunca_la_clave PASSED
-tests/test_semana2.py::test_brecha_de_overhead_bloquea_la_solicitud PASSED
-tests/test_semana2.py::test_riesgo_reputacional_bloquea_la_solicitud PASSED
-tests/test_semana2.py::test_asignar_actualiza_el_estado_de_las_solicitudes PASSED
-tests/test_semana2.py::test_mcp_expone_las_diez_herramientas PASSED      [ 88%]
-tests/test_semana2.py::test_flujo_consulta_publica_no_pide_identidad PASSED
-tests/test_semana2.py::test_flujo_personal_que_intenta_asignar_es_rechazado_por_la_tool PASSED
-tests/test_semana2.py::test_flujo_riesgo_reputacional_escala PASSED      [100%]
-
-============================== 35 passed in 2.75s ===============================
-```
-
-*(Salida recortada: se muestran 14 de los 35 tests.)*
-
-La suite cubre los criterios de éxito del caso: separación entre lo público y lo
-interno, control de rol en las cuatro operaciones restringidas, reporte de
-brechas específicas, atribución correcta de la solicitud, justificación
-obligatoria en la asignación, y resumen estructurado en el escalamiento.
-
-> ### ⬛ REEMPLAZAR 3 de 3 — Screenshot del pipeline en verde
-> Captura de la pestaña **Actions** del repositorio con el check verde y los
-> 35 tests pasando.
+> ⚠️ Reemplazar por la captura real de la pestaña Actions con el workflow en verde (debe verse el nombre del workflow, el commit y el check).

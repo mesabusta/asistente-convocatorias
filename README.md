@@ -3,59 +3,53 @@
 Centro de Proyectos y Consultoría — Universidad de los Alpes
 
 Agente conversacional que evalúa si el Centro puede presentarse a una
-convocatoria de financiación y, cuando puede, ayuda a conformar el equipo.
-Lee las bases y las políticas desde una base de conocimiento pública, contrasta
-contra los datos internos del Centro, y respeta dos roles con capacidades
-distintas.
+convocatoria de financiación. Lee las bases desde una base de conocimiento
+pública, autentica a los miembros del Centro y registra sus postulaciones
+validando las políticas de la universidad.
 
 **Integrantes:** [mesabusta](https://github.com/mesabusta) · [ysusecheo93](https://github.com/ysusecheo93)
+
+**Principio de diseño:** entre más simple, mejor. La rúbrica de la semana 2 pide
+al menos tres herramientas; el proyecto implementa exactamente tres, con el
+patrón de los tutoriales del curso.
 
 ---
 
 ## El problema
 
 El cuello de botella no es encontrar convocatorias: es decidir rápido a cuáles
-vale la pena presentarse y con qué equipo. Ese juicio cruza tres fuentes que
-viven separadas — las bases de la convocatoria, el personal real del Centro y
-las políticas de la universidad — y el orden en que hay que consultarlas depende
-de lo que se va encontrando. Si la entidad exige un consorcio internacional que
-no existe, no vale la pena mirar el resto.
+vale la pena presentarse. Ese juicio cruza fuentes que viven separadas — las
+bases de la convocatoria, el perfil real de cada miembro y las políticas de la
+universidad — y el orden en que hay que consultarlas depende de lo que se va
+encontrando. Si la convocatoria fija un overhead por debajo del mínimo
+institucional, no vale la pena mirar el resto.
 
 ## Qué hace el agente
 
 1. **Evalúa la intención antes de actuar.** Si la pregunta se resuelve con
-   información pública, responde sin pedir identidad. Si toca datos internos o
-   ejecuta una acción, autentica primero.
+   información pública, responde sin pedir identidad. Si la gestión es una
+   postulación, autentica primero.
 2. **Lee, no supone.** Toda cifra, requisito o política sale de una herramienta.
-3. **Respeta el rol.** El personal consulta su propio perfil y crea solicitudes.
-   Solo un directivo ve a todo el personal, revisa solicitudes y asigna.
-4. **Reporta brechas específicas.** No dice "no se puede": dice qué requisito
-   falta y contra qué política.
-5. **Escala cuando debe.** Ante riesgo reputacional o un caso ambiguo, entrega
-   un resumen estructurado al equipo humano en vez de decidir.
+3. **Reporta brechas específicas.** No dice "no se puede": dice qué requisito
+   falla y contra qué política (overhead, riesgo reputacional, duplicado).
+4. **Confirma solo con evidencia.** Nunca afirma que una solicitud quedó creada
+   sin el `ok=true` de la herramienta que la registró.
 
 ---
 
-## Las diez herramientas
+## Las tres herramientas
 
-| Grupo | Herramienta | Requiere |
+| Herramienta | Tipo | Requiere |
 |---|---|---|
-| Pública | `buscar_convocatorias` | — |
-| Pública | `leer_convocatoria` | — |
-| Pública | `consultar_politica` | — |
-| Frontera | `autenticar` | cédula + clave |
-| Interna | `consultar_perfil` | sesión (cualquier rol, solo el propio) |
-| Interna | `listar_personal` | sesión de **directivo** |
-| Interna | `listar_solicitudes` | sesión de **directivo** |
-| Acción | `crear_solicitud` | sesión de **personal** |
-| Acción | `asignar_convocatoria` | sesión de **directivo** |
-| Acción | `escalar_a_humanos` | — |
+| `consultar_convocatoria` | Pública: encuentra y lee las bases | — |
+| `autenticar` | Frontera: abre sesión con rol y devuelve el perfil propio | cédula + clave |
+| `crear_solicitud` | Acción: registra la postulación tras validar brechas | sesión de **personal** |
 
 **La autorización se verifica dentro de la herramienta, no en el prompt.** Un
 modelo puede ser persuadido de ignorar una instrucción del system prompt; una
-función que devuelve `{"ok": false}` no. Si el agente intentara asignar una
-convocatoria con un token de personal, la operación falla del lado del servidor.
-Hay un test que ejercita exactamente ese intento.
+función que devuelve `{"ok": false}` no. Si el agente intentara crear una
+solicitud con un token inválido o una sesión de directivo, la operación falla
+del lado del servidor. Hay tests que ejercitan exactamente esos intentos.
 
 ---
 
@@ -68,16 +62,16 @@ Usuario
 ┌──────────────────────────────────────────────┐
 │  Cliente LangGraph  (centro/graph.py)        │
 │                                              │
-│   agent_node ──► should_continue              │
-│       ▲               │                       │
-│       │               ▼                       │
-│       └────────── tools_node                  │
+│   agent_node ──► should_continue             │
+│       ▲               │                      │
+│       │               ▼                      │
+│       └────────── tools_node                 │
 └───────────────────────┬──────────────────────┘
                         │  JSON-RPC sobre stdio (MCP)
                         ▼
 ┌──────────────────────────────────────────────┐
 │  Servidor FastMCP (centro/mcp_server.py)     │
-│  10 herramientas · control de rol            │
+│  3 herramientas · control de rol             │
 └───────┬───────────────────────┬──────────────┘
         ▼                       ▼
   base_conocimiento/      datos_internos/
@@ -85,8 +79,9 @@ Usuario
 ```
 
 El agente es *stateful*: el historial de mensajes viaja en el estado del grafo,
-lo que permite encadenar varias herramientas antes de responder. El número de
-iteraciones no lo fija el diseño — lo fija lo que devuelven las herramientas.
+lo que permite encadenar varias herramientas antes de responder (el token de
+`autenticar` llega a `crear_solicitud` por el historial). El cliente no declara
+ninguna herramienta: las descubre en tiempo de ejecución con `load_mcp_tools()`.
 
 ---
 
@@ -100,15 +95,13 @@ datos_internos/          Información PRIVADA, requiere autenticación
   personal.json          10 personas con experticia, nivel, dedicación, historial
   solicitudes.json       Solicitudes de postulación sembradas
 centro/
-  kb.py                  Carga y búsqueda en la base de conocimiento pública
-  internos.py            Personal, sesiones, roles y solicitudes
-  tools.py               Las diez herramientas
+  tools.py               Las tres herramientas (KB, sesiones y validaciones)
   mcp_server.py          Servidor FastMCP sobre stdio
   graph.py               Cliente LangGraph, ciclo ReAct, descubrimiento dinámico
   scripted_llm.py        LLM guionizado para tests y evidencia sin Ollama
-  evidencia_flujo.py     Traza completa de las cuatro situaciones
-tests/test_semana2.py    35 tests
-wiki_semana2.md          Documento de reflexión
+  evidencia_flujo.py     Traza de los flujos de evidencia
+tests/test_semana2.py    17 tests
+wiki_semana2.md          Documento de reflexión de la entrega
 ```
 
 ---
@@ -125,19 +118,19 @@ En Linux o macOS: `python3 -m venv .venv && source .venv/bin/activate`.
 
 ## Uso
 
-**Las cuatro situaciones del caso**, con traza completa:
+**Los flujos de evidencia**, con traza completa (entrada, decisión, resultado,
+respuesta):
 
 ```powershell
-python -m centro.evidencia_flujo         # las cuatro
-python -m centro.evidencia_flujo C       # solo la de riesgo reputacional
+python -m centro.evidencia_flujo         # los tres
+python -m centro.evidencia_flujo 3       # solo el de manejo de error
 ```
 
-| Situación | Qué demuestra |
+| Flujo | Qué demuestra |
 |---|---|
-| A | Brecha de política: dos requisitos incumplidos, no se crea solicitud |
-| B | Personal autenticado que sí encaja: se crea la solicitud |
-| C | Riesgo reputacional: el agente escala en vez de decidir |
-| D | Directiva que revisa solicitudes y asigna el equipo con justificación |
+| 1 | Consulta pública: se responde sin pedir identidad |
+| 2 | Postulación completa: autenticar → leer bases → crear solicitud |
+| 3 | Manejo de error: `ok=false` con brecha de overhead, no se crea nada |
 
 **Tests:**
 
@@ -165,5 +158,5 @@ El resto está en `datos_internos/personal.json`.
 
 `.github/workflows/entrega.yml` ejecuta `pytest -m semana2` sobre Python 3.13 en
 cada push a `main` y en cada pull request. La suite incluye un test que abre una
-sesión MCP real y verifica que el servidor expone las diez herramientas, así que
+sesión MCP real y verifica que el servidor expone las tres herramientas, así que
 el protocolo se valida en cada corrida.

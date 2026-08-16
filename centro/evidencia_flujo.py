@@ -1,11 +1,16 @@
-"""Traza completa de las cuatro situaciones del caso de negocio.
+"""Traza de los flujos de evidencia de la semana 2.
 
-Imprime, para cada situación: la entrada del usuario, cada decisión del agente
-con sus argumentos, el resultado que devolvió el servidor MCP y la respuesta
-final construida a partir de esos resultados.
+Imprime, para cada flujo: la entrada del usuario, cada decisión del agente con
+sus argumentos, el resultado que devolvió el servidor MCP y la respuesta final.
+Cubre lo que exige la rúbrica: dos flujos completos de tool calling y el manejo
+explícito de un error (una brecha que bloquea la acción).
+
+El LLM está guionizado (`ScriptedLLM`) para que la evidencia sea reproducible
+sin depender de Ollama; el servidor MCP, las herramientas, la autenticación y
+las validaciones son reales.
 
 Uso:  python -m centro.evidencia_flujo
-      python -m centro.evidencia_flujo A     (una sola situación)
+      python -m centro.evidencia_flujo 2     (un solo flujo)
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import asyncio
 import json
 import sys
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
@@ -80,8 +85,6 @@ async def _ejecutar(titulo: str, contexto: str, pregunta: str, llm) -> None:
         print(f"\n[HANDSHAKE MCP] {len(tools)} herramientas descubiertas:")
         print(f"  {', '.join(t.name for t in tools)}")
         app = build_graph(llm.bind_tools(tools), {t.name: t for t in tools})
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         estado = await app.ainvoke(
             {
                 "messages": [
@@ -95,58 +98,51 @@ async def _ejecutar(titulo: str, contexto: str, pregunta: str, llm) -> None:
 
 
 # ==========================================================================
-# Situación A — brecha de política, no se crea solicitud
+# Flujo 1 — consulta pública: se responde sin pedir identidad
 # ==========================================================================
 
 
-async def situacion_a() -> None:
+async def flujo_1() -> None:
     llm = ScriptedLLM(
         [
-            _decide(_llamada("leer_convocatoria", {"convocatoria_id": "BID-2026-EDU-014"}, "a1")),
-            _decide(_llamada("consultar_politica", {"tema": "overhead"}, "a2")),
+            _decide(_llamada("consultar_convocatoria", {"consulta": "BID-2026-EDU-014"}, "f1")),
             AIMessage(
                 content=(
-                    "No deberías postularte a la BID-2026-EDU-014 en las condiciones actuales. "
-                    "Encontré dos brechas, ambas leídas de fuentes públicas:\n\n"
-                    "1. CONSORCIO. Las bases exigen un consorcio con al menos una universidad "
-                    "de otro país miembro del BID. Las propuestas de una sola institución no "
-                    "son habilitadas, y el Centro no tiene ese socio constituido.\n\n"
+                    "Las bases de la BID-2026-EDU-014 (fuente pública, sin necesidad de "
+                    "identificarte) piden tener en cuenta dos condiciones antes de "
+                    "postularse:\n\n"
+                    "1. CONSORCIO. Exige un consorcio con al menos una universidad de otro "
+                    "país miembro del BID; las propuestas de una sola institución no quedan "
+                    "habilitadas.\n"
                     "2. OVERHEAD. La convocatoria reconoce un máximo del 12% de costos "
-                    "indirectos. La política POL-FIN-001 fija un mínimo institucional del 15% "
-                    "para organismos internacionales. La brecha es de 3 puntos y solo la puede "
-                    "levantar una exención de la Vicerrectoría de Investigación, trámite que "
-                    "debe iniciar la Dirección del Centro.\n\n"
-                    "Por eso no creé ninguna solicitud: mientras la brecha exista, postularse "
-                    "sería invertir tiempo en una propuesta inhabilitada. El tema y tu perfil sí "
-                    "encajan, así que vale la pena preguntarle a la Dirección si quiere tramitar "
-                    "la exención y buscar la universidad socia."
+                    "indirectos y el mínimo institucional para organismos internacionales es "
+                    "15% (POL-FIN-001): hay una brecha de 3 puntos que solo levanta una "
+                    "exención de la Vicerrectoría.\n\n"
+                    "Cierra el 30 de septiembre de 2026. Si aun así quieres postularte, la "
+                    "Dirección tendría que tramitar la exención y conseguir la universidad "
+                    "socia antes de esa fecha."
                 )
             ),
         ]
     )
     await _ejecutar(
-        "SITUACIÓN A — Personal, brecha de política (consulta pública)",
-        "Usuario: consultor de la sección de educación superior. Aún sin autenticar.",
-        "¿Puedo postularme a la convocatoria del BID de innovación en educación superior?",
+        "FLUJO 1 — Consulta pública: responder sin pedir identidad",
+        "Usuario: cualquiera (aún sin autenticar).",
+        "¿Qué pide la convocatoria del BID de innovación en educación superior?",
         llm,
     )
 
 
 # ==========================================================================
-# Situación B — el personal crea una solicitud
+# Flujo 2 — postulación completa: autenticar -> leer bases -> crear solicitud
 # ==========================================================================
 
 
-async def situacion_b() -> None:
+async def flujo_2() -> None:
     llm = ScriptedLLM(
         [
-            _decide(_llamada("autenticar", {"cedula": "1080901234", "clave": "3846"}, "b1")),
-            _decide(_llamada("consultar_perfil", {"token": "<TOKEN>"}, "b2")),
-            _decide(
-                _llamada(
-                    "leer_convocatoria", {"convocatoria_id": "MINCIENCIAS-2026-CEA-003"}, "b3"
-                )
-            ),
+            _decide(_llamada("autenticar", {"cedula": "1080901234", "clave": "3846"}, "g1")),
+            _decide(_llamada("consultar_convocatoria", {"consulta": "MINCIENCIAS-2026-CEA-003"}, "g2")),
             _decide(
                 _llamada(
                     "crear_solicitud",
@@ -156,197 +152,90 @@ async def situacion_b() -> None:
                         "rol_propuesto": "investigador principal",
                         "justificacion": (
                             "Acredita 7 publicaciones en los últimos 5 años (la convocatoria "
-                            "exige 3) y tiene dedicación de tiempo completo, que es requisito "
-                            "para el investigador principal. Su experticia en desarrollo "
-                            "económico y política pública coincide con el objeto, y sus dos "
-                            "evaluaciones de impacto previas terminaron con resultado exitoso."
+                            "exige 3) y dedicación de tiempo completo, requisito del "
+                            "investigador principal. Su experticia en desarrollo económico y "
+                            "política pública coincide con el objeto de la convocatoria."
                         ),
                     },
-                    "b4",
+                    "g3",
                 )
             ),
             AIMessage(
                 content=(
-                    "Listo, Ricardo: tu solicitud quedó creada con el identificador SOL-0005.\n\n"
-                    "Verifiqué contra las bases de MINCIENCIAS-2026-CEA-003 (fuente pública) y "
-                    "contra tu perfil (dato interno, tras autenticarte):\n"
-                    "- Publicaciones: la convocatoria exige 3 en los últimos 5 años; tu perfil "
-                    "registra 7.\n"
-                    "- Dedicación: exige tiempo completo para el investigador principal; la tuya "
-                    "es tiempo completo.\n"
-                    "- Experticia: desarrollo económico y política pública, que es el área de la "
-                    "convocatoria.\n"
-                    "- No exige consorcio internacional, así que esa restricción no aplica.\n\n"
-                    "La solicitud queda en estado pendiente. Importante: tú te postulas, no te "
-                    "asignas. Quién queda finalmente en la propuesta lo decide la Dirección del "
-                    "Centro contrastando todas las solicitudes contra los criterios de "
-                    "evaluación."
+                    "Listo, Ricardo: tu solicitud quedó creada con el identificador SOL-0005 "
+                    "(confirmado por la herramienta).\n\n"
+                    "Contrasté las bases de MINCIENCIAS-2026-CEA-003 (fuente pública) con tu "
+                    "perfil (dato interno, tras autenticarte):\n"
+                    "- Publicaciones: exige 3 en los últimos 5 años; tu perfil registra 7.\n"
+                    "- Dedicación: exige tiempo completo para el rol principal; la tuya lo es.\n"
+                    "- Experticia: desarrollo económico y política pública, el área de la "
+                    "convocatoria.\n\n"
+                    "La solicitud queda en estado pendiente: tú te postulas, la asignación "
+                    "final del equipo la decide la Dirección del Centro."
                 )
             ),
         ]
     )
     await _ejecutar(
-        "SITUACIÓN B — Personal crea una solicitud (autenticación + perfil)",
-        "Usuario: Ricardo Tovar, investigador de la sección de desarrollo económico.",
+        "FLUJO 2 — Postulación: autenticar, contrastar el perfil y crear la solicitud",
+        "Usuario: Ricardo Tovar, investigador (rol personal).",
         "¿Puedo aplicar a la convocatoria de Minciencias de ciencias económicas y administrativas?",
         llm,
     )
 
 
 # ==========================================================================
-# Situación C — riesgo reputacional, escalar
+# Flujo 3 — manejo de error: la brecha de overhead bloquea la solicitud
 # ==========================================================================
 
 
-async def situacion_c() -> None:
+async def flujo_3() -> None:
     llm = ScriptedLLM(
         [
-            _decide(_llamada("buscar_convocatorias", {"texto": "responsabilidad social"}, "c1")),
+            _decide(_llamada("autenticar", {"cedula": "1030456789", "clave": "2964"}, "h1")),
             _decide(
                 _llamada(
-                    "leer_convocatoria", {"convocatoria_id": "PETROANDINA-2026-RSE-002"}, "c2"
-                )
-            ),
-            _decide(_llamada("consultar_politica", {"tema": "riesgo reputacional"}, "c3")),
-            _decide(
-                _llamada(
-                    "escalar_a_humanos",
-                    {
-                        "motivo": (
-                            "Riesgo reputacional: la entidad convocante pertenece al sector "
-                            "extractivo y el estudio implica datos sensibles de comunidades. "
-                            "La política POL-RIE-002 reserva esta valoración al Comité de Ética "
-                            "y Reputación."
-                        ),
-                        "convocatoria_id": "PETROANDINA-2026-RSE-002",
-                        "analisis_realizado": [
-                            "Leí las bases: el objeto encaja con la sección de sostenibilidad.",
-                            "La entidad opera en hidrocarburos y minería (sector restringido).",
-                            "Registra procesos abiertos ante autoridades ambientales y pronunciamientos sobre consulta previa.",
-                            "El estudio levanta información socioeconómica de hogares en comunidades.",
-                            "El presupuesto se declara 'a convenir', sin valor de referencia público.",
-                        ],
-                        "brechas": [
-                            "Sector extractivo: restricción del numeral 1 de POL-RIE-002.",
-                            "Datos sensibles de comunidades: señal 3 de la misma política.",
-                            "Sin monto de referencia: no se puede determinar el nivel de autorización (POL-GOB-003).",
-                        ],
-                        "preguntas_pendientes": [
-                            "¿El Comité emite concepto favorable pese a los procesos ambientales abiertos?",
-                            "¿Existe un marco de tratamiento de datos comunitarios aprobado para este tipo de levantamiento?",
-                            "¿Qué valor estimado se usa para fijar el nivel de autorización con presupuesto a convenir?",
-                        ],
-                    },
-                    "c4",
-                )
-            ),
-            AIMessage(
-                content=(
-                    "Este caso no lo puedo resolver yo y no debo intentarlo: lo escalé al Comité "
-                    "de Ética y Reputación.\n\n"
-                    "El tema sí encaja con la sección de sostenibilidad, pero concurren tres "
-                    "señales de la política POL-RIE-002: la entidad pertenece al sector "
-                    "extractivo, registra procesos abiertos ante autoridades ambientales y el "
-                    "estudio levanta datos sensibles de comunidades. A eso se suma que el "
-                    "presupuesto está 'a convenir', lo que impide fijar el nivel de autorización.\n\n"
-                    "La valoración reputacional no es una decisión técnica y la política es "
-                    "explícita en que ningún sistema de apoyo puede concluir que una convocatoria "
-                    "de sector restringido es viable. No creé solicitud ni asigné equipo.\n\n"
-                    "El Comité recibe el análisis que alcancé a hacer, las tres brechas "
-                    "identificadas y las preguntas concretas que quedan abiertas, para que no "
-                    "tenga que rehacer el trabajo desde cero."
-                )
-            ),
-        ]
-    )
-    await _ejecutar(
-        "SITUACIÓN C — Riesgo reputacional: reconocer la señal y escalar",
-        "Usuario: cualquiera. No hace falta autenticar para leer las bases y la política.",
-        "¿Qué tal la convocatoria de la empresa del sector extractivo para el estudio de "
-        "responsabilidad social? El presupuesto es a convenir.",
-        llm,
-    )
-
-
-# ==========================================================================
-# Situación D — la directiva asigna el equipo
-# ==========================================================================
-
-
-async def situacion_d() -> None:
-    llm = ScriptedLLM(
-        [
-            _decide(_llamada("autenticar", {"cedula": "1010234567", "clave": "4821"}, "d1")),
-            _decide(
-                _llamada(
-                    "leer_convocatoria", {"convocatoria_id": "MINCIENCIAS-2026-CEA-003"}, "d2"
-                )
-            ),
-            _decide(
-                _llamada(
-                    "listar_solicitudes",
-                    {"token": "<TOKEN>", "convocatoria_id": "MINCIENCIAS-2026-CEA-003"},
-                    "d3",
-                )
-            ),
-            _decide(_llamada("listar_personal", {"token": "<TOKEN>", "area": "politica_publica"}, "d4")),
-            _decide(
-                _llamada(
-                    "asignar_convocatoria",
+                    "crear_solicitud",
                     {
                         "token": "<TOKEN>",
-                        "convocatoria_id": "MINCIENCIAS-2026-CEA-003",
-                        "cedulas": ["1030456789", "1060789012"],
-                        "justificacion": (
-                            "El criterio de mayor peso es la trayectoria del investigador "
-                            "principal (30%). Carolina Pérez acredita 5 publicaciones en los "
-                            "últimos 5 años frente a las 3 exigidas, dedicación de tiempo "
-                            "completo y dos evaluaciones de impacto previas con resultado "
-                            "exitoso. Sebastián Cruz cubre el requisito de investigador de "
-                            "apoyo con maestría y tiempo completo, y su trabajo previo en "
-                            "sistematización de programas sociales aporta al criterio de "
-                            "complementariedad del equipo (20%). Felipe Manrique queda por "
-                            "fuera porque su dedicación es de medio tiempo."
-                        ),
+                        "convocatoria_id": "BID-2026-EDU-014",
+                        "rol_propuesto": "investigadora principal",
+                        "justificacion": "Mi experticia en educación superior encaja con el objeto.",
                     },
-                    "d5",
+                    "h2",
                 )
             ),
             AIMessage(
                 content=(
-                    "Convocatoria MINCIENCIAS-2026-CEA-003 asignada a Carolina Pérez como "
-                    "investigadora principal y Sebastián Cruz como investigador de apoyo.\n\n"
-                    "Cómo llegué a ese equipo, contra los criterios de evaluación de las bases:\n"
-                    "- Trayectoria del investigador principal (30%, el de mayor peso): Carolina "
-                    "tiene 5 publicaciones recientes frente a las 3 exigidas, tiempo completo y "
-                    "dos evaluaciones de impacto previas con resultado exitoso.\n"
-                    "- Composición y complementariedad del equipo (20%): Sebastián cumple el "
-                    "requisito de apoyo con maestría y tiempo completo.\n"
-                    "- Descarté a Felipe Manrique porque su dedicación es de medio tiempo, y la "
-                    "convocatoria exige tiempo completo en el rol principal.\n\n"
-                    "Las tres solicitudes quedaron actualizadas: dos asignadas y una como no "
-                    "seleccionada."
+                    "No pude crear la solicitud, Carolina, y la razón es concreta: la "
+                    "herramienta devolvió ok=false con brecha de OVERHEAD. La convocatoria "
+                    "del BID reconoce un máximo del 12% de costos indirectos y el mínimo "
+                    "institucional para organismos internacionales es del 15% (POL-FIN-001).\n\n"
+                    "Mientras esa brecha exista, postularse sería invertir tiempo en una "
+                    "propuesta inhabilitada. La exención solo puede tramitarla la Dirección "
+                    "ante la Vicerrectoría de Investigación: te sugiero plantearlo allí antes "
+                    "de intentar la postulación de nuevo. No quedó registrada ninguna solicitud."
                 )
             ),
         ]
     )
     await _ejecutar(
-        "SITUACIÓN D — Directiva revisa solicitudes y asigna el equipo",
-        "Usuario: Luisa Ruiz, Coordinadora del Centro (rol directivo).",
-        "¿A qué convocatoria puede aplicar mi personal de política pública y con qué equipo?",
+        "FLUJO 3 — Manejo de error: ok=false con brecha de overhead, no se crea nada",
+        "Usuario: Carolina Pérez, investigadora (rol personal).",
+        "Créame la solicitud para la convocatoria del BID de educación superior.",
         llm,
     )
 
 
-SITUACIONES = {"A": situacion_a, "B": situacion_b, "C": situacion_c, "D": situacion_d}
+FLUJOS = {"1": flujo_1, "2": flujo_2, "3": flujo_3}
 
 
 async def main() -> None:
-    pedidas = [a.upper() for a in sys.argv[1:]] or list(SITUACIONES)
-    for clave in pedidas:
-        funcion = SITUACIONES.get(clave)
+    pedidos = sys.argv[1:] or list(FLUJOS)
+    for clave in pedidos:
+        funcion = FLUJOS.get(clave)
         if funcion is None:
-            print(f"Situación desconocida: {clave}. Opciones: {', '.join(SITUACIONES)}")
+            print(f"Flujo desconocido: {clave}. Opciones: {', '.join(FLUJOS)}")
             continue
         await funcion()
 
