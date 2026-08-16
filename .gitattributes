@@ -1,0 +1,14 @@
+# Normaliza los finales de línea: en el repositorio siempre LF,
+# en el working directory de Windows lo que use cada quien.
+# Evita diffs falsos de cientos de líneas cuando se edita desde Windows.
+* text=auto eol=lf
+
+# Binarios y datos: sin conversión.
+*.csv     text eol=lf
+*.png     binary
+*.jpg     binary
+*.ico     binary
+
+# Los notebooks son JSON; se tratan como texto pero no se muestran
+# en los diffs por defecto para no ensuciar la revisión.
+*.ipynb   text eol=lf linguist-documentation
