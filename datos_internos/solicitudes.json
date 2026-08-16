@@ -1,0 +1,38 @@
+[
+  {
+    "id": "SOL-0001",
+    "convocatoria_id": "MINCIENCIAS-2026-CEA-003",
+    "cedula": "1030456789",
+    "nombre": "Carolina Pérez",
+    "rol_propuesto": "investigadora principal",
+    "justificacion": "Acredita 5 publicaciones en los últimos 5 años, por encima de las 3 exigidas, y tiene dedicación de tiempo completo. Dos evaluaciones de impacto previas con resultado exitoso.",
+    "estado": "pendiente"
+  },
+  {
+    "id": "SOL-0002",
+    "convocatoria_id": "MINCIENCIAS-2026-CEA-003",
+    "cedula": "1060789012",
+    "nombre": "Sebastián Cruz",
+    "rol_propuesto": "investigador de apoyo",
+    "justificacion": "Experticia en política pública y dedicación de tiempo completo. Formación de maestría, que es el requisito para el investigador de apoyo.",
+    "estado": "pendiente"
+  },
+  {
+    "id": "SOL-0003",
+    "convocatoria_id": "MINCIENCIAS-2026-CEA-003",
+    "cedula": "1100123456",
+    "nombre": "Felipe Manrique",
+    "rol_propuesto": "investigador de apoyo",
+    "justificacion": "Formación en economía y experiencia en caracterización de mipymes, pertinente para el componente de desarrollo económico territorial.",
+    "estado": "pendiente"
+  },
+  {
+    "id": "SOL-0004",
+    "convocatoria_id": "UE-2026-SOST-007",
+    "cedula": "1050678901",
+    "nombre": "Marcela Ariza",
+    "rol_propuesto": "investigadora principal",
+    "justificacion": "Experiencia previa exitosa en transición energética en municipios mineros, que es exactamente el objeto de la convocatoria.",
+    "estado": "pendiente"
+  }
+]

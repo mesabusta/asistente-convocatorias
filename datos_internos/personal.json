@@ -1,0 +1,169 @@
+[
+  {
+    "cedula": "1010234567",
+    "clave": "4821",
+    "nombre": "Luisa Ruiz",
+    "rol": "directivo",
+    "cargo": "Coordinadora del Centro de Proyectos",
+    "seccion": "direccion",
+    "experticia": ["politica_publica", "educacion_superior"],
+    "nivel": "senior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Doctorado en Políticas Públicas",
+    "publicaciones_ultimos_5_anios": 6,
+    "historial": [
+      {"proyecto": "Evaluación del programa Jóvenes en Acción", "anio": 2023, "rol": "directora", "resultado": "exitoso"},
+      {"proyecto": "Diagnóstico de deserción en IES públicas", "anio": 2021, "rol": "investigadora principal", "resultado": "exitoso"}
+    ]
+  },
+  {
+    "cedula": "1020345678",
+    "clave": "7315",
+    "nombre": "Andrés Melo",
+    "rol": "directivo",
+    "cargo": "Subdirector de Consultoría",
+    "seccion": "direccion",
+    "experticia": ["desarrollo_economico", "politica_publica"],
+    "nivel": "senior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Maestría en Economía",
+    "publicaciones_ultimos_5_anios": 2,
+    "historial": [
+      {"proyecto": "Evaluación de impacto de zonas francas", "anio": 2024, "rol": "director", "resultado": "exitoso"},
+      {"proyecto": "Consultoría de competitividad regional", "anio": 2022, "rol": "director", "resultado": "con_riesgos"}
+    ]
+  },
+  {
+    "cedula": "1030456789",
+    "clave": "2964",
+    "nombre": "Carolina Pérez",
+    "rol": "personal",
+    "cargo": "Investigadora principal",
+    "seccion": "politica_publica",
+    "experticia": ["politica_publica", "desarrollo_economico"],
+    "nivel": "senior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Doctorado en Economía",
+    "publicaciones_ultimos_5_anios": 5,
+    "historial": [
+      {"proyecto": "Evaluación de impacto de subsidios rurales", "anio": 2024, "rol": "investigadora principal", "resultado": "exitoso"},
+      {"proyecto": "Estudio de informalidad laboral urbana", "anio": 2022, "rol": "investigadora principal", "resultado": "exitoso"},
+      {"proyecto": "Modelo de proyección fiscal territorial", "anio": 2021, "rol": "coinvestigadora", "resultado": "con_riesgos"}
+    ]
+  },
+  {
+    "cedula": "1040567890",
+    "clave": "5138",
+    "nombre": "Julián Ospina",
+    "rol": "personal",
+    "cargo": "Consultor senior",
+    "seccion": "educacion_superior",
+    "experticia": ["educacion_superior"],
+    "nivel": "senior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Maestría en Educación",
+    "publicaciones_ultimos_5_anios": 3,
+    "historial": [
+      {"proyecto": "Rediseño curricular en formación técnica", "anio": 2024, "rol": "consultor líder", "resultado": "exitoso"},
+      {"proyecto": "Permanencia estudiantil en universidades regionales", "anio": 2023, "rol": "consultor", "resultado": "exitoso"}
+    ]
+  },
+  {
+    "cedula": "1050678901",
+    "clave": "8402",
+    "nombre": "Marcela Ariza",
+    "rol": "personal",
+    "cargo": "Investigadora",
+    "seccion": "sostenibilidad",
+    "experticia": ["sostenibilidad", "desarrollo_economico"],
+    "nivel": "senior",
+    "dedicacion": "medio_tiempo",
+    "formacion": "Doctorado en Estudios Ambientales",
+    "publicaciones_ultimos_5_anios": 4,
+    "historial": [
+      {"proyecto": "Transición energética en municipios mineros", "anio": 2025, "rol": "investigadora principal", "resultado": "exitoso"},
+      {"proyecto": "Línea base ambiental cuenca alta", "anio": 2023, "rol": "investigadora", "resultado": "fallido"}
+    ]
+  },
+  {
+    "cedula": "1060789012",
+    "clave": "6273",
+    "nombre": "Sebastián Cruz",
+    "rol": "personal",
+    "cargo": "Consultor junior",
+    "seccion": "politica_publica",
+    "experticia": ["politica_publica"],
+    "nivel": "junior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Maestría en Políticas Públicas",
+    "publicaciones_ultimos_5_anios": 1,
+    "historial": [
+      {"proyecto": "Sistematización de programas sociales", "anio": 2025, "rol": "asistente de investigación", "resultado": "exitoso"}
+    ]
+  },
+  {
+    "cedula": "1070890123",
+    "clave": "9517",
+    "nombre": "Paula Neira",
+    "rol": "personal",
+    "cargo": "Consultora",
+    "seccion": "educacion_superior",
+    "experticia": ["educacion_superior", "politica_publica"],
+    "nivel": "junior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Maestría en Educación",
+    "publicaciones_ultimos_5_anios": 2,
+    "historial": [
+      {"proyecto": "Piloto de tutorías entre pares", "anio": 2025, "rol": "consultora", "resultado": "exitoso"}
+    ]
+  },
+  {
+    "cedula": "1080901234",
+    "clave": "3846",
+    "nombre": "Ricardo Tovar",
+    "rol": "personal",
+    "cargo": "Investigador",
+    "seccion": "desarrollo_economico",
+    "experticia": ["desarrollo_economico", "politica_publica"],
+    "nivel": "senior",
+    "dedicacion": "tiempo_completo",
+    "formacion": "Doctorado en Economía Aplicada",
+    "publicaciones_ultimos_5_anios": 7,
+    "historial": [
+      {"proyecto": "Evaluación de impacto de crédito agropecuario", "anio": 2024, "rol": "investigador principal", "resultado": "exitoso"},
+      {"proyecto": "Encadenamientos productivos en el Pacífico", "anio": 2022, "rol": "investigador principal", "resultado": "exitoso"}
+    ]
+  },
+  {
+    "cedula": "1090012345",
+    "clave": "7180",
+    "nombre": "Diana Bejarano",
+    "rol": "personal",
+    "cargo": "Consultora junior",
+    "seccion": "sostenibilidad",
+    "experticia": ["sostenibilidad"],
+    "nivel": "junior",
+    "dedicacion": "medio_tiempo",
+    "formacion": "Maestría en Desarrollo Sostenible",
+    "publicaciones_ultimos_5_anios": 0,
+    "historial": [
+      {"proyecto": "Inventario de emisiones institucional", "anio": 2025, "rol": "asistente", "resultado": "con_riesgos"}
+    ]
+  },
+  {
+    "cedula": "1100123456",
+    "clave": "2635",
+    "nombre": "Felipe Manrique",
+    "rol": "personal",
+    "cargo": "Consultor",
+    "seccion": "desarrollo_economico",
+    "experticia": ["desarrollo_economico", "politica_publica"],
+    "nivel": "junior",
+    "dedicacion": "medio_tiempo",
+    "formacion": "Maestría en Economía",
+    "publicaciones_ultimos_5_anios": 1,
+    "historial": [
+      {"proyecto": "Caracterización de mipymes urbanas", "anio": 2024, "rol": "consultor", "resultado": "exitoso"}
+    ]
+  }
+]
