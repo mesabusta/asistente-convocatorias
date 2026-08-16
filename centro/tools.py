@@ -1,37 +1,47 @@
-"""Las diez herramientas del asistente de convocatorias.
+"""Las tres herramientas del asistente de convocatorias.
 
-Están organizadas en cuatro grupos según lo que exigen del usuario:
+La rúbrica de la semana 2 pide al menos tres tools; el caso necesita tres
+capacidades esenciales. Una tool por capacidad — el mismo principio de
+granularidad fina del tutorial del curso (convert_units / calculate /
+get_weather): cada herramienta hace exactamente una cosa y todos sus
+parámetros son siempre relevantes.
 
-1. **Públicas** — `buscar_convocatorias`, `leer_convocatoria`, `consultar_politica`.
-   No piden identidad. Responden desde la base de conocimiento pública.
-2. **Frontera** — `autenticar`. Convierte cédula y clave en un token con rol.
-3. **Lectura interna** — `consultar_perfil` (cualquier rol, solo lo propio) y
-   `listar_personal` (solo directivo).
-4. **Acciones** — `crear_solicitud` (solo personal), `listar_solicitudes` y
-   `asignar_convocatoria` (solo directivo), y `escalar_a_humanos` (cualquiera).
+1. ``consultar_convocatoria`` — **pública**. Encuentra y lee las bases de una
+   convocatoria. No pide identidad.
+2. ``autenticar`` — **frontera**. Convierte cédula y clave en un token de
+   sesión con rol, y devuelve el perfil propio.
+3. ``crear_solicitud`` — **acción**. Registra la postulación del usuario
+   autenticado, después de validar las brechas de política.
 
-Todas devuelven un string con JSON y el mismo contrato de error:
-`{"ok": false, "error": "..."}`. Un `ok=false` no es una excepción: es
-información que el agente debe leer y comunicar, y con la que puede decidir
-reintentar por otro camino.
+Contrato de retorno: todas devuelven un string JSON. Éxito: ``{"ok": true}``.
+Error o resultado inesperado: ``{"ok": false, "error": "..."}``. Un
+``ok=false`` no es una excepción: es información que el agente debe leer y
+comunicar (la brecha concreta, no un rechazo genérico).
 
-**La autorización se verifica aquí, no en el prompt.** Cada herramienta interna
-llama a `internos.exigir_rol` antes de tocar un dato. Si el modelo alucinara una
-llamada a `asignar_convocatoria` con un token de personal, la herramienta la
-rechaza igual.
+**La autorización se verifica aquí, no en el prompt.** ``crear_solicitud``
+valida el token y el rol antes de tocar un dato: si el modelo alucinara la
+llamada con un token inválido o un rol equivocado, la herramienta la rechaza
+igual.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Annotated, Optional
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
 
+import yaml
 from pydantic import Field
 
-from centro import internos, kb
+ROOT = Path(__file__).resolve().parents[1]
+DIR_CONVOCATORIAS = ROOT / "base_conocimiento" / "convocatorias"
+ARCHIVO_PERSONAL = ROOT / "datos_internos" / "personal.json"
+ARCHIVO_SOLICITUDES = ROOT / "datos_internos" / "solicitudes.json"
 
-#: Overhead mínimo institucional según el tipo de entidad convocante.
-#: Refleja la tabla de `base_conocimiento/politicas/overhead-y-contrapartida.md`.
+#: Overhead mínimo institucional según el tipo de entidad convocante
+#: (política POL-FIN-001, `base_conocimiento/politicas/overhead-y-contrapartida.md`).
 OVERHEAD_MINIMO = {
     "organismo_internacional": 15,
     "publica_nacional": 12,
@@ -39,7 +49,7 @@ OVERHEAD_MINIMO = {
     "fundacion": 10,
 }
 
-#: Sectores con restricción reputacional (POL-RIE-002).
+#: Sectores con restricción reputacional (política POL-RIE-002).
 SECTORES_RESTRINGIDOS = {"extractivo", "armas", "tabaco", "juegos_de_azar"}
 
 
@@ -52,136 +62,152 @@ def _error(mensaje: str, **extra) -> str:
 
 
 # ==========================================================================
-# 1. Herramientas públicas — no requieren autenticación
+# Base de conocimiento pública (markdown con frontmatter YAML)
 # ==========================================================================
 
 
-def buscar_convocatorias(
-    area: Annotated[
-        Optional[str],
-        Field(description="Área temática: educacion_superior, politica_publica, sostenibilidad, desarrollo_economico"),
-    ] = None,
-    tipo: Annotated[
-        Optional[str],
-        Field(description="Tipo: investigacion, consultoria, cooperacion_tecnica, formacion, impacto_social"),
-    ] = None,
-    texto: Annotated[
-        Optional[str],
-        Field(description="Texto libre a buscar en el contenido de la convocatoria, p.ej. 'permanencia' o 'BID'"),
-    ] = None,
-) -> str:
-    """Lista las convocatorias abiertas, filtrando por área, tipo o texto libre.
-
-    Información pública: no requiere autenticación. Devuelve un resumen de cada
-    convocatoria; para las condiciones completas hay que leerla.
-    """
-    encontradas = kb.buscar_convocatorias(area=area, tipo=tipo, texto=texto)
-    if not encontradas:
-        disponibles = sorted({str(d.meta.get("area", "")) for d in kb.convocatorias()})
-        return _error(
-            "No hay convocatorias abiertas que coincidan con esos filtros.",
-            areas_disponibles=disponibles,
-        )
-    return _json(
-        {
-            "ok": True,
-            "fuente": "publica",
-            "n_resultados": len(encontradas),
-            "convocatorias": [
-                {
-                    "id": d.id,
-                    "titulo": d.titulo,
-                    "entidad": d.meta.get("entidad"),
-                    "tipo": d.meta.get("tipo"),
-                    "area": d.meta.get("area"),
-                    "monto_cop": d.meta.get("monto_cop") or d.meta.get("monto_declarado"),
-                    "cierre": str(d.meta.get("cierre")),
-                }
-                for d in encontradas
-            ],
-        }
-    )
+def _partir_frontmatter(texto: str) -> tuple[dict, str]:
+    """Separa el frontmatter YAML del cuerpo markdown."""
+    if not texto.startswith("---"):
+        return {}, texto
+    partes = texto.split("---", 2)
+    if len(partes) < 3:
+        return {}, texto
+    meta = yaml.safe_load(partes[1]) or {}
+    return (meta if isinstance(meta, dict) else {}), partes[2].strip()
 
 
-def leer_convocatoria(
-    convocatoria_id: Annotated[
-        str, Field(description="Identificador de la convocatoria, p.ej. BID-2026-EDU-014")
+@lru_cache(maxsize=1)
+def _convocatorias() -> tuple[dict, ...]:
+    """Carga las convocatorias abiertas: metadatos + texto completo."""
+    documentos = []
+    for ruta in sorted(DIR_CONVOCATORIAS.glob("*.md")):
+        meta, cuerpo = _partir_frontmatter(ruta.read_text(encoding="utf-8"))
+        if str(meta.get("estado", "abierta")) == "abierta":
+            documentos.append({**meta, "id": str(meta.get("id", ruta.stem)), "texto": cuerpo})
+    return tuple(documentos)
+
+
+def _resumen(doc: dict) -> dict:
+    return {
+        "id": doc["id"],
+        "titulo": doc.get("titulo"),
+        "entidad": doc.get("entidad"),
+        "tipo": doc.get("tipo"),
+        "area": doc.get("area"),
+        "cierre": str(doc.get("cierre")),
+    }
+
+
+# ==========================================================================
+# Estado interno: personal, sesiones y solicitudes
+# ==========================================================================
+
+_sesiones: dict[str, dict] = {}
+_solicitudes: list[dict] = []
+_contador: list[int] = [0]  # lista para poder mutarlo sin `global`
+
+
+def reiniciar_estado() -> None:
+    """Estado inicial: sin sesiones, solicitudes sembradas desde disco."""
+    semilla = json.loads(ARCHIVO_SOLICITUDES.read_text(encoding="utf-8"))
+    _sesiones.clear()
+    _solicitudes.clear()
+    _solicitudes.extend(dict(s) for s in semilla)
+    _contador[0] = len(semilla)
+
+
+def _asegurar_estado() -> None:
+    if not _solicitudes and _contador[0] == 0:
+        reiniciar_estado()
+
+
+def _personal() -> list[dict]:
+    return json.loads(ARCHIVO_PERSONAL.read_text(encoding="utf-8"))
+
+
+# ==========================================================================
+# Tool 1 — consultar_convocatoria (pública, sin autenticación)
+# ==========================================================================
+
+
+def consultar_convocatoria(
+    consulta: Annotated[
+        str,
+        Field(
+            description=(
+                "Identificador (p.ej. BID-2026-EDU-014) o texto libre para buscar "
+                "(p.ej. 'educación superior', 'Minciencias')"
+            )
+        ),
     ],
 ) -> str:
-    """Lee las bases completas de una convocatoria desde la base de conocimiento.
+    """Encuentra una convocatoria abierta y devuelve sus bases completas.
 
-    Devuelve el texto del documento junto con las condiciones extraídas del
-    frontmatter (montos, topes, plazos) y las señales de riesgo detectables por
-    la política de sectores restringidos. Información pública.
+    Información pública: no requiere autenticación. Si la consulta coincide con
+    varias convocatorias devuelve la lista de resúmenes para precisar; si no
+    coincide con ninguna, el error incluye los identificadores disponibles.
+
+    El detalle incluye las condiciones (monto, overhead, cierre), el overhead
+    mínimo institucional aplicable (POL-FIN-001) y las señales de riesgo
+    reputacional detectables (POL-RIE-002), para que el agente pueda reportar
+    brechas leyendo solo fuentes públicas.
     """
-    doc = kb.obtener_convocatoria(convocatoria_id)
-    if doc is None:
+    objetivo = consulta.strip().lower()
+    docs = _convocatorias()
+
+    encontradas = [d for d in docs if objetivo == d["id"].lower()]
+    if not encontradas:
+        encontradas = [d for d in docs if objetivo in d["id"].lower()]
+    if not encontradas:
+        encontradas = [
+            d
+            for d in docs
+            if objetivo in " ".join(str(v) for v in d.values()).lower()
+        ]
+
+    if not encontradas:
         return _error(
-            f"No existe una convocatoria con identificador '{convocatoria_id}'.",
-            ids_disponibles=[d.id for d in kb.convocatorias()],
+            f"Ninguna convocatoria abierta coincide con '{consulta}'.",
+            ids_disponibles=[d["id"] for d in docs],
+        )
+    if len(encontradas) > 1:
+        return _json(
+            {
+                "ok": True,
+                "fuente": "publica",
+                "nota": "Varias convocatorias coinciden; consulte una por su id.",
+                "convocatorias": [_resumen(d) for d in encontradas],
+            }
         )
 
-    tipo_entidad = str(doc.meta.get("tipo_entidad", ""))
-    sector = str(doc.meta.get("sector_entidad", ""))
+    doc = encontradas[0]
+    tipo_entidad = str(doc.get("tipo_entidad", ""))
+    sector = str(doc.get("sector_entidad", ""))
     señales = []
     if sector in SECTORES_RESTRINGIDOS:
-        señales.append(f"La entidad pertenece a un sector con restricción reputacional: {sector}.")
-    if doc.meta.get("monto_cop") is None:
+        señales.append(
+            f"La entidad pertenece a un sector con restricción reputacional: {sector} (POL-RIE-002)."
+        )
+    if doc.get("monto_cop") is None:
         señales.append("El presupuesto se declara 'a convenir': no hay valor de referencia público.")
 
     return _json(
         {
             "ok": True,
             "fuente": "publica",
-            "id": doc.id,
-            "titulo": doc.titulo,
-            "entidad": doc.meta.get("entidad"),
-            "tipo_entidad": tipo_entidad,
-            "sector_entidad": sector or None,
-            "tipo": doc.meta.get("tipo"),
-            "area": doc.meta.get("area"),
-            "monto_cop": doc.meta.get("monto_cop"),
-            "monto_declarado": doc.meta.get("monto_declarado"),
-            "overhead_maximo_pct": doc.meta.get("overhead_maximo_pct"),
-            "contrapartida_minima_pct": doc.meta.get("contrapartida_minima_pct"),
-            "cierre": str(doc.meta.get("cierre")),
+            **_resumen(doc),
+            "monto_cop": doc.get("monto_cop"),
+            "overhead_maximo_pct": doc.get("overhead_maximo_pct"),
             "overhead_minimo_institucional_pct": OVERHEAD_MINIMO.get(tipo_entidad),
             "señales_de_riesgo": señales,
-            "texto": doc.cuerpo,
-        }
-    )
-
-
-def consultar_politica(
-    tema: Annotated[
-        str,
-        Field(description="Tema de la política: overhead, contrapartida, riesgo reputacional, autorización, conflicto de interés"),
-    ],
-) -> str:
-    """Lee la política de participación de la universidad relevante para un tema.
-
-    Las políticas son información pública y viven en la misma base de
-    conocimiento que las convocatorias. No requiere autenticación.
-    """
-    doc = kb.buscar_politica(tema)
-    if doc is None:
-        return _error(
-            f"No se encontró una política asociada al tema '{tema}'.",
-            politicas_disponibles=[{"id": d.id, "titulo": d.titulo} for d in kb.politicas()],
-        )
-    return _json(
-        {
-            "ok": True,
-            "fuente": "publica",
-            "id": doc.id,
-            "titulo": doc.titulo,
-            "texto": doc.cuerpo,
+            "texto": doc["texto"],
         }
     )
 
 
 # ==========================================================================
-# 2. Frontera — autenticación
+# Tool 2 — autenticar (frontera entre lo público y lo interno)
 # ==========================================================================
 
 
@@ -191,130 +217,36 @@ def autenticar(
 ) -> str:
     """Valida credenciales y abre una sesión con un rol asociado.
 
-    Devuelve un token que las herramientas internas exigen. El token lleva el
-    rol: quien se autentica como personal no puede ejecutar acciones de
-    directivo aunque lo pida explícitamente.
+    Devuelve el token que exige ``crear_solicitud`` y el perfil propio
+    (experticia, nivel, dedicación, historial) — nunca el de otra persona y
+    nunca la clave. El mensaje de error es deliberadamente genérico: no revela
+    si falló la cédula o la clave.
     """
-    sesion, error = internos.autenticar(cedula, clave)
-    if error:
-        return _error(error)
-    assert sesion is not None
-    capacidades = (
-        ["consultar_perfil", "crear_solicitud", "escalar_a_humanos"]
-        if sesion.rol == "personal"
-        else [
-            "consultar_perfil",
-            "listar_personal",
-            "listar_solicitudes",
-            "asignar_convocatoria",
-            "escalar_a_humanos",
-        ]
-    )
-    return _json(
-        {
-            "ok": True,
-            "token": sesion.token,
-            "nombre": sesion.nombre,
-            "rol": sesion.rol,
-            "capacidades": capacidades,
-        }
-    )
+    _asegurar_estado()
+    persona = next((p for p in _personal() if p["cedula"] == cedula.strip()), None)
+    if persona is None or persona["clave"] != str(clave).strip():
+        return _error("Credenciales inválidas. Verifique la cédula y la clave de 4 dígitos.")
 
-
-# ==========================================================================
-# 3. Lectura interna — requiere sesión
-# ==========================================================================
-
-
-def consultar_perfil(
-    token: Annotated[str, Field(description="Token de sesión devuelto por autenticar")],
-) -> str:
-    """Devuelve el perfil del usuario autenticado: experticia, nivel, historial.
-
-    Cualquier rol puede consultar **su propio** perfil. No permite consultar el
-    de otra persona: no recibe cédula como parámetro, justamente para que no
-    exista esa posibilidad.
-    """
-    sesion, error = internos.resolver_sesion(token)
-    if error:
-        return _error(error)
-    assert sesion is not None
-    persona = next((p for p in internos.personal() if p["cedula"] == sesion.cedula), None)
-    if persona is None:
-        return _error("La sesión es válida pero el perfil no está en el registro del Centro.")
-    return _json({"ok": True, "fuente": "interna", "perfil": internos.perfil_publico(persona)})
-
-
-def listar_personal(
-    token: Annotated[str, Field(description="Token de sesión de un directivo")],
-    area: Annotated[
-        Optional[str], Field(description="Filtra por área de experticia, p.ej. politica_publica")
-    ] = None,
-) -> str:
-    """Lista a todo el personal del Centro con su experticia, nivel e historial.
-
-    **Exclusiva de directivos.** Un token de personal recibe un error: el
-    personal no puede ver los datos de otros.
-    """
-    sesion, error = internos.exigir_rol(token, "directivo")
-    if error:
-        return _error(error)
-    assert sesion is not None
-    equipo = [internos.perfil_publico(p) for p in internos.personal()]
-    if area:
-        equipo = [p for p in equipo if area.lower() in [e.lower() for e in p["experticia"]]]
-    if not equipo:
-        return _error(f"Ningún miembro del Centro tiene experticia en '{area}'.", brecha="experticia")
+    token = "ses_" + hashlib.sha256(f"{persona['cedula']}:{len(_sesiones)}".encode()).hexdigest()[:16]
+    _sesiones[token] = {"cedula": persona["cedula"], "nombre": persona["nombre"], "rol": persona["rol"]}
     return _json(
         {
             "ok": True,
             "fuente": "interna",
-            "consultado_por": sesion.nombre,
-            "n_personas": len(equipo),
-            "personal": equipo,
-        }
-    )
-
-
-def listar_solicitudes(
-    token: Annotated[str, Field(description="Token de sesión de un directivo")],
-    convocatoria_id: Annotated[
-        Optional[str], Field(description="Filtra por convocatoria. Si se omite, devuelve todas")
-    ] = None,
-) -> str:
-    """Lista las solicitudes de postulación creadas por el personal.
-
-    **Exclusiva de directivos.** Es el insumo para decidir el equipo: muestra
-    quién se postuló, en qué rol y con qué justificación.
-    """
-    sesion, error = internos.exigir_rol(token, "directivo")
-    if error:
-        return _error(error)
-    assert sesion is not None
-    solicitudes = internos.solicitudes_de(convocatoria_id)
-    if not solicitudes:
-        return _error(
-            "No hay solicitudes registradas"
-            + (f" para la convocatoria '{convocatoria_id}'." if convocatoria_id else "."),
-            brecha="sin_solicitudes",
-        )
-    return _json(
-        {
-            "ok": True,
-            "fuente": "interna",
-            "n_solicitudes": len(solicitudes),
-            "solicitudes": solicitudes,
+            "token": token,
+            "rol": persona["rol"],
+            "perfil": {k: v for k, v in persona.items() if k != "clave"},
         }
     )
 
 
 # ==========================================================================
-# 4. Acciones
+# Tool 3 — crear_solicitud (acción; exclusiva del rol personal)
 # ==========================================================================
 
 
 def crear_solicitud(
-    token: Annotated[str, Field(description="Token de sesión de un miembro del personal")],
+    token: Annotated[str, Field(description="Token de sesión devuelto por autenticar")],
     convocatoria_id: Annotated[str, Field(description="Identificador de la convocatoria")],
     rol_propuesto: Annotated[
         str, Field(description="Rol al que se postula, p.ej. 'investigador principal'")
@@ -325,59 +257,69 @@ def crear_solicitud(
 ) -> str:
     """Crea una solicitud de postulación a nombre del usuario autenticado.
 
-    **Exclusiva del personal.** Antes de registrar verifica tres cosas: que la
-    convocatoria exista, que no tenga señales de riesgo reputacional activas y
-    que el overhead que ofrece no esté por debajo del mínimo institucional. Si
-    alguna falla, no crea nada y devuelve la brecha.
-
-    El personal se postula; no se asigna. La asignación es de la Dirección.
+    **Exclusiva del rol personal** (el personal se postula; la asignación final
+    es de la Dirección). Antes de registrar valida, en orden: sesión y rol,
+    que la convocatoria exista, que no tenga restricción reputacional, que su
+    overhead no esté bajo el mínimo institucional y que no sea un duplicado.
+    Si algo falla no crea nada y devuelve la brecha concreta.
     """
-    sesion, error = internos.exigir_rol(token, "personal")
-    if error:
-        return _error(error)
-    assert sesion is not None
-
-    doc = kb.obtener_convocatoria(convocatoria_id)
-    if doc is None:
-        return _error(f"No existe una convocatoria con identificador '{convocatoria_id}'.")
-
-    sector = str(doc.meta.get("sector_entidad", ""))
-    if sector in SECTORES_RESTRINGIDOS:
+    _asegurar_estado()
+    sesion = _sesiones.get(str(token).strip())
+    if sesion is None:
+        return _error("Sesión no válida o expirada. Debe autenticarse de nuevo.")
+    if sesion["rol"] != "personal":
         return _error(
-            f"No puede crearse una solicitud: la entidad pertenece al sector '{sector}', "
-            "con restricción reputacional. El caso requiere concepto del Comité de Ética "
-            "y Reputación (POL-RIE-002).",
-            brecha="riesgo_reputacional",
-            requiere_escalamiento=True,
+            f"La operación requiere rol 'personal' y la sesión tiene rol '{sesion['rol']}'. "
+            "Solo el personal del Centro crea solicitudes de postulación; la asignación "
+            "de equipos es una decisión exclusiva de la Dirección."
         )
 
-    tipo_entidad = str(doc.meta.get("tipo_entidad", ""))
-    minimo = OVERHEAD_MINIMO.get(tipo_entidad)
-    tope = doc.meta.get("overhead_maximo_pct")
+    objetivo = convocatoria_id.strip().upper()
+    doc = next((d for d in _convocatorias() if d["id"].upper() == objetivo), None)
+    if doc is None:
+        return _error(
+            f"No existe una convocatoria con identificador '{convocatoria_id}'.",
+            ids_disponibles=[d["id"] for d in _convocatorias()],
+        )
+
+    sector = str(doc.get("sector_entidad", ""))
+    if sector in SECTORES_RESTRINGIDOS:
+        return _error(
+            f"No puede crearse una solicitud: la entidad pertenece al sector '{sector}', con "
+            "restricción reputacional (POL-RIE-002). El caso requiere concepto del Comité de "
+            "Ética y Reputación: debe escalarse, no resolverse aquí.",
+            brecha="riesgo_reputacional",
+        )
+
+    minimo = OVERHEAD_MINIMO.get(str(doc.get("tipo_entidad", "")))
+    tope = doc.get("overhead_maximo_pct")
     if minimo is not None and tope is not None and tope < minimo:
         return _error(
-            f"No puede crearse una solicitud: la convocatoria reconoce un overhead máximo "
-            f"del {tope}% y el mínimo institucional para una entidad de tipo "
-            f"'{tipo_entidad}' es {minimo}% (POL-FIN-001). Requiere exención de la "
-            "Vicerrectoría de Investigación, que debe tramitar la Dirección del Centro.",
+            f"No puede crearse una solicitud: la convocatoria reconoce un overhead máximo del "
+            f"{tope}% y el mínimo institucional para ese tipo de entidad es {minimo}% "
+            "(POL-FIN-001). Requiere exención de la Vicerrectoría, que tramita la Dirección.",
             brecha="overhead",
             overhead_convocatoria_pct=tope,
             overhead_minimo_institucional_pct=minimo,
         )
 
-    if internos.existe_solicitud(convocatoria_id, sesion.cedula):
+    if any(s["convocatoria_id"].upper() == objetivo and s["cedula"] == sesion["cedula"] for s in _solicitudes):
         return _error(
-            f"{sesion.nombre} ya tiene una solicitud registrada para '{convocatoria_id}'.",
+            f"{sesion['nombre']} ya tiene una solicitud registrada para '{objetivo}'.",
             brecha="duplicada",
         )
 
-    solicitud = internos.registrar_solicitud(
-        convocatoria_id=convocatoria_id,
-        cedula=sesion.cedula,
-        nombre=sesion.nombre,
-        rol_propuesto=rol_propuesto,
-        justificacion=justificacion,
-    )
+    _contador[0] += 1
+    solicitud = {
+        "id": f"SOL-{_contador[0]:04d}",
+        "convocatoria_id": objetivo,
+        "cedula": sesion["cedula"],
+        "nombre": sesion["nombre"],
+        "rol_propuesto": rol_propuesto,
+        "justificacion": justificacion,
+        "estado": "pendiente",
+    }
+    _solicitudes.append(solicitud)
     return _json(
         {
             "ok": True,
@@ -392,128 +334,10 @@ def crear_solicitud(
     )
 
 
-def asignar_convocatoria(
-    token: Annotated[str, Field(description="Token de sesión de un directivo")],
-    convocatoria_id: Annotated[str, Field(description="Identificador de la convocatoria")],
-    cedulas: Annotated[
-        list[str], Field(description="Cédulas del personal que conformará el equipo")
-    ],
-    justificacion: Annotated[
-        str,
-        Field(description="Por qué ese equipo, contrastado con los criterios de evaluación de la convocatoria"),
-    ],
-) -> str:
-    """Asigna una convocatoria a un equipo concreto del Centro.
-
-    **Exclusiva de directivos.** Exige justificación: una asignación sin razones
-    contra los criterios de evaluación se rechaza. Verifica que cada cédula
-    exista y que la convocatoria no tenga restricción reputacional activa.
-    """
-    sesion, error = internos.exigir_rol(token, "directivo")
-    if error:
-        return _error(error)
-    assert sesion is not None
-
-    doc = kb.obtener_convocatoria(convocatoria_id)
-    if doc is None:
-        return _error(f"No existe una convocatoria con identificador '{convocatoria_id}'.")
-
-    sector = str(doc.meta.get("sector_entidad", ""))
-    if sector in SECTORES_RESTRINGIDOS:
-        return _error(
-            f"No puede asignarse un equipo: la entidad pertenece al sector '{sector}', "
-            "con restricción reputacional (POL-RIE-002). Requiere concepto previo del "
-            "Comité de Ética y Reputación.",
-            brecha="riesgo_reputacional",
-            requiere_escalamiento=True,
-        )
-
-    if not cedulas:
-        return _error("Debe indicarse al menos una persona para conformar el equipo.")
-
-    if not justificacion or len(justificacion.strip()) < 20:
-        return _error(
-            "La asignación exige una justificación explícita contra los criterios de "
-            "evaluación de la convocatoria."
-        )
-
-    registro = {p["cedula"]: p for p in internos.personal()}
-    desconocidas = [c for c in cedulas if c not in registro]
-    if desconocidas:
-        return _error(
-            f"Estas cédulas no corresponden a personal del Centro: {desconocidas}.",
-            brecha="persona_inexistente",
-        )
-
-    integrantes = [
-        {
-            "cedula": c,
-            "nombre": registro[c]["nombre"],
-            "nivel": registro[c]["nivel"],
-            "dedicacion": registro[c]["dedicacion"],
-            "experticia": registro[c]["experticia"],
-        }
-        for c in cedulas
-    ]
-    asignacion = internos.registrar_asignacion(
-        convocatoria_id=convocatoria_id,
-        integrantes=integrantes,
-        justificacion=justificacion,
-        decidida_por=sesion.nombre,
-    )
-    return _json(
-        {
-            "ok": True,
-            "fuente": "interna",
-            "accion": "convocatoria_asignada",
-            "asignacion": asignacion,
-        }
-    )
-
-
-def escalar_a_humanos(
-    motivo: Annotated[
-        str, Field(description="Por qué el caso supera la capacidad del asistente")
-    ],
-    convocatoria_id: Annotated[
-        Optional[str], Field(description="Convocatoria involucrada, si aplica")
-    ] = None,
-    analisis_realizado: Annotated[
-        Optional[list[str]], Field(description="Qué alcanzó a verificar el asistente")
-    ] = None,
-    brechas: Annotated[
-        Optional[list[str]], Field(description="Brechas o riesgos que no pudo resolver")
-    ] = None,
-    preguntas_pendientes: Annotated[
-        Optional[list[str]], Field(description="Preguntas concretas que requieren juicio humano")
-    ] = None,
-) -> str:
-    """Escala el caso al equipo humano con un resumen estructurado.
-
-    No decide: documenta. Devuelve el paquete que recibe el Comité de Ética o la
-    Dirección, para que no tengan que rehacer el análisis desde cero. Disponible
-    para cualquier usuario, con o sin sesión.
-    """
-    if not motivo or not motivo.strip():
-        return _error("El escalamiento exige un motivo explícito.")
-
-    destinatario = "Comité de Ética y Reputación"
-    texto = motivo.lower()
-    if "autorizacion" in texto or "autorización" in texto or "monto" in texto:
-        destinatario = "Dirección del Centro / Vicerrectoría de Investigación"
-    elif "experticia" in texto or "equipo" in texto:
-        destinatario = "Dirección del Centro"
-
-    return _json(
-        {
-            "ok": True,
-            "accion": "escalado",
-            "destinatario": destinatario,
-            "convocatoria_id": convocatoria_id,
-            "motivo": motivo,
-            "analisis_realizado": analisis_realizado or [],
-            "brechas": brechas or [],
-            "preguntas_pendientes": preguntas_pendientes or [],
-            "nota": "No se creó solicitud ni se asignó equipo. La decisión queda en manos humanas.",
-        }
-    )
+def solicitudes_de(convocatoria_id: str | None = None) -> list[dict]:
+    """Solicitudes registradas (para tests y evidencia)."""
+    _asegurar_estado()
+    if convocatoria_id is None:
+        return list(_solicitudes)
+    objetivo = convocatoria_id.strip().upper()
+    return [s for s in _solicitudes if s["convocatoria_id"].upper() == objetivo]
