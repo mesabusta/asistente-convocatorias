@@ -2,6 +2,12 @@ langchain-mcp-adapters==0.1.7
 langgraph==0.3.4
 langchain-ollama==0.3.2
 langchain-core==0.3.60
+# langsmith 0.3.x exige zstandard<0.24, y esa versión no publica wheel para
+# Python 3.14: pip intenta compilarla desde el código fuente y falla en Windows
+# sin las Build Tools de Visual Studio. En 0.2.x zstandard es un extra opcional,
+# así que ni siquiera se instala. langchain-core acepta cualquier langsmith
+# >=0.1.126, por lo que este pin no restringe nada más.
+langsmith>=0.2.11,<0.3
 mcp[cli]==1.9.2
 pydantic==2.11.5
 PyYAML==6.0.2
